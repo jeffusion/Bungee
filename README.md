@@ -26,6 +26,8 @@
   </p>
 </div>
 
+**Languages**: **English** | [中文](README_zh.md)
+
 A high-performance, configurable reverse proxy server built with Bun and TypeScript, featuring hot configuration reloading, a multi-process architecture, and robust failover mechanisms.
 
 ## Why Bungee?
