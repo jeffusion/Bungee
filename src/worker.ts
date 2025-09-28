@@ -2,6 +2,7 @@ import { logger } from './logger';
 import type { AppConfig, Upstream, RouteConfig, ModificationRules } from './config';
 import type { Server } from 'bun';
 import { loadConfig } from './config';
+import { processDynamicValue, type ExpressionContext } from './expression-engine';
 
 // --- Runtime State Management ---
 interface RuntimeUpstream extends Upstream {
@@ -251,6 +252,33 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
   const headers = new Headers(req.headers);
   headers.delete('host');
 
+  // 构建表达式上下文
+  const url = new URL(req.url);
+  const context: ExpressionContext = {
+    headers: Object.fromEntries(req.headers.entries()),
+    body: {}, // 稍后填充
+    url: {
+      pathname: url.pathname,
+      search: url.search,
+      host: url.hostname,
+      protocol: url.protocol,
+    },
+    method: req.method,
+    env: process.env as Record<string, string>,
+  };
+
+  // 如果有JSON body，解析并添加到上下文
+  let parsedBody: Record<string, any> = {};
+  const contentType = req.headers.get('content-type') || '';
+  if (req.body && contentType.includes('application/json')) {
+    try {
+      parsedBody = await req.clone().json();
+      context.body = parsedBody;
+    } catch (err) {
+      logger.warn({ request: requestLog, error: err }, 'Failed to parse JSON body for expression context');
+    }
+  }
+
   if (rules.headers) {
     if (rules.headers.remove) {
       for (const key of rules.headers.remove) {
@@ -261,25 +289,34 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
     if (rules.headers.replace) {
       for (const [key, value] of Object.entries(rules.headers.replace)) {
         if (headers.has(key)) {
-          headers.set(key, value);
-          logger.debug({ request: requestLog, header: { key } }, 'Replaced header');
+          try {
+            const processedValue = processDynamicValue(value, context);
+            headers.set(key, String(processedValue));
+            logger.debug({ request: requestLog, header: { key, value: processedValue } }, 'Replaced header');
+          } catch (error) {
+            logger.error({ request: requestLog, header: { key }, error }, 'Failed to process dynamic header replace value');
+          }
         }
       }
     }
     if (rules.headers.add) {
       for (const [key, value] of Object.entries(rules.headers.add)) {
-        headers.set(key, value);
-        logger.debug({ request: requestLog, header: { key } }, 'Added/Overwrote header');
+        try {
+          const processedValue = processDynamicValue(value, context);
+          headers.set(key, String(processedValue));
+          logger.debug({ request: requestLog, header: { key, value: processedValue } }, 'Added/Overwrote header');
+        } catch (error) {
+          logger.error({ request: requestLog, header: { key }, error }, 'Failed to process dynamic header add value');
+        }
       }
     }
   }
 
   let body: BodyInit | null = req.body;
-  const contentType = req.headers.get('content-type') || '';
 
   if (rules.body && req.body && contentType.includes('application/json')) {
     try {
-      let modifiedBody = await req.clone().json() as Record<string, any>;
+      let modifiedBody = { ...parsedBody };
       if (rules.body.remove) {
         for (const key of rules.body.remove) {
           delete modifiedBody[key];
@@ -289,22 +326,37 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
       if (rules.body.replace) {
         for (const [key, value] of Object.entries(rules.body.replace)) {
           if (key in modifiedBody) {
-            modifiedBody[key] = value;
-            logger.debug({ request: requestLog, body: { key } }, `Replaced body field`);
+            try {
+              const processedValue = processDynamicValue(value, context);
+              modifiedBody[key] = processedValue;
+              logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Replaced body field`);
+            } catch (error) {
+              logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body replace value');
+            }
           }
         }
       }
       if (rules.body.add) {
         for (const [key, value] of Object.entries(rules.body.add)) {
-          modifiedBody[key] = value;
-          logger.debug({ request: requestLog, body: { key } }, `Added/Overwrote body field`);
+          try {
+            const processedValue = processDynamicValue(value, context);
+            modifiedBody[key] = processedValue;
+            logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Added/Overwrote body field`);
+          } catch (error) {
+            logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body add value');
+          }
         }
       }
       if (rules.body.default) {
         for (const [key, value] of Object.entries(rules.body.default)) {
           if (modifiedBody[key] === undefined) {
-            modifiedBody[key] = value;
-            logger.debug({ request: requestLog, body: { key } }, `Defaulted body field`);
+            try {
+              const processedValue = processDynamicValue(value, context);
+              modifiedBody[key] = processedValue;
+              logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Defaulted body field`);
+            } catch (error) {
+              logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body default value');
+            }
           }
         }
       }

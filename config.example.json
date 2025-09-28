@@ -8,10 +8,17 @@
           "target": "http://single-service.example.com",
           "priority": 1,
           "headers": {
-            "add": { "x-request-id": "generated-by-proxy" }
+            "add": {
+              "x-request-id": "{{uuid()}}",
+              "x-timestamp": "{{now()}}",
+              "x-proxy-version": "1.0"
+            }
           },
           "body": {
-            "add": { "proxy_processed": true }
+            "add": {
+              "proxy_processed": true,
+              "request_time": "{{new Date().toISOString()}}"
+            }
           }
         }
       ]
@@ -19,13 +26,27 @@
     {
       "path": "/api/load-balanced-with-override",
       "headers": {
-        "add": { "x-common": "true", "x-version": "v1" },
-        "replace": { "user-agent": "proxy/1.0" },
+        "add": {
+          "x-common": "true",
+          "x-version": "v1",
+          "x-request-host": "{{headers.host}}",
+          "x-method": "{{method}}"
+        },
+        "replace": {
+          "user-agent": "{{headers['user-agent'] + ' (via-proxy/1.0)'}}",
+          "authorization": "{{headers.authorization ? headers.authorization : 'Bearer default-token'}}"
+        },
         "remove": ["x-internal-debug"]
       },
       "body": {
-        "replace": { "api_version": "v2" },
-        "default": { "timeout": 30 }
+        "replace": {
+          "api_version": "{{body.api_version || 'v2'}}",
+          "timestamp": "{{now()}}"
+        },
+        "default": {
+          "timeout": 30,
+          "client_ip": "{{trim(first(split(headers['x-forwarded-for'], ',')))}}"
+        }
       },
       "upstreams": [
         { "target": "http://service-a.example.com", "weight": 80, "priority": 1 },
@@ -34,11 +55,19 @@
           "weight": 20,
           "priority": 1,
           "headers": {
-            "add": { "x-version": "v2-canary" },
-            "replace": { "authorization": "Bearer canary-token" }
+            "add": {
+              "x-version": "v2-canary",
+              "x-canary-id": "{{uuid()}}"
+            },
+            "replace": {
+              "authorization": "{{parseJWT(last(split(headers.authorization, ' '))).sub ? 'Bearer canary-' + last(split(headers.authorization, ' ')) : 'Bearer canary-default'}}"
+            }
           },
           "body": {
-            "replace": { "environment": "canary" }
+            "replace": {
+              "environment": "canary",
+              "session_id": "{{body.session_id || uuid()}}"
+            }
           }
         }
       ]

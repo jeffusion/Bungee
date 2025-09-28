@@ -343,7 +343,7 @@ describe('Server Request Handler', () => {
 
   test('should apply default weight during config validation', () => {
     // 测试配置验证逻辑
-    const testUpstream = { target: 'http://test.com' };
+    const testUpstream: any = { target: 'http://test.com' };
 
     // 模拟配置验证过程
     if (testUpstream.weight === undefined) {
@@ -442,5 +442,158 @@ describe('Server Request Handler', () => {
     expect(forwardedBody).not.toHaveProperty('replace_field');
     // Should keep other field
     expect(forwardedBody.other_field).toBe('some-value');
+  });
+
+  test('should process dynamic expressions in headers', async () => {
+    const dynamicConfig = {
+      routes: [{
+        path: '/api/dynamic',
+        upstreams: [{
+          target: 'http://mock-target.com',
+          weight: 100,
+          priority: 1,
+          headers: {
+            add: {
+              'x-timestamp': '{{now()}}',
+              'x-method': '{{method}}',
+              'x-host': '{{headers.host}}',
+              'x-uuid': '{{uuid()}}',
+            }
+          }
+        }],
+        failover: { enabled: false, retryableStatusCodes: [] },
+      }]
+    };
+
+    const req = new Request('http://localhost/api/dynamic/test', {
+      headers: { 'host': 'example.com' }
+    });
+
+    await handleRequest(req, dynamicConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions) throw new Error('fetch was called without options');
+    const forwardedHeaders = new Headers(fetchOptions.headers);
+
+    // Check dynamic values were processed
+    expect(parseInt(forwardedHeaders.get('x-timestamp')!)).toBeGreaterThan(1600000000000);
+    expect(forwardedHeaders.get('x-method')).toBe('GET');
+    expect(forwardedHeaders.get('x-host')).toBe('example.com');
+    expect(forwardedHeaders.get('x-uuid')).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  test('should process dynamic expressions in body', async () => {
+    const dynamicConfig = {
+      routes: [{
+        path: '/api/dynamic',
+        upstreams: [{
+          target: 'http://mock-target.com',
+          weight: 100,
+          priority: 1,
+          body: {
+            add: {
+              'processed_at': '{{new Date().toISOString()}}',
+              'request_id': '{{uuid()}}',
+              'user_agent': '{{headers["user-agent"] || "unknown"}}',
+            }
+          }
+        }],
+        failover: { enabled: false, retryableStatusCodes: [] },
+      }]
+    };
+
+    const originalBody = { existing_field: 'value' };
+    const req = new Request('http://localhost/api/dynamic/test', {
+      method: 'POST',
+      body: JSON.stringify(originalBody),
+      headers: {
+        'Content-Type': 'application/json',
+        'user-agent': 'test-agent/1.0'
+      }
+    });
+
+    await handleRequest(req, dynamicConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions || !fetchOptions.body) throw new Error('fetch was called without a body');
+    const forwardedBody = JSON.parse(fetchOptions.body as string);
+
+    // Check dynamic values were processed
+    expect(forwardedBody.existing_field).toBe('value');
+    expect(forwardedBody.processed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(forwardedBody.request_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(forwardedBody.user_agent).toBe('test-agent/1.0');
+  });
+
+  test('should handle complex function expressions', async () => {
+    const dynamicConfig = {
+      routes: [{
+        path: '/api/functions',
+        upstreams: [{
+          target: 'http://mock-target.com',
+          weight: 100,
+          priority: 1,
+          headers: {
+            add: {
+              'x-base64': '{{base64encode(headers.host)}}',
+              'x-upper': '{{toUpperCase(headers["user-agent"])}}',
+            }
+          }
+        }],
+        failover: { enabled: false, retryableStatusCodes: [] },
+      }]
+    };
+
+    const req = new Request('http://localhost/api/functions/test', {
+      headers: {
+        'host': 'example.com',
+        'user-agent': 'test-agent'
+      }
+    });
+
+    await handleRequest(req, dynamicConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions) throw new Error('fetch was called without options');
+    const forwardedHeaders = new Headers(fetchOptions.headers);
+
+    expect(forwardedHeaders.get('x-base64')).toBe(Buffer.from('example.com').toString('base64'));
+    expect(forwardedHeaders.get('x-upper')).toBe('TEST-AGENT');
+  });
+
+  test('should handle expression errors gracefully', async () => {
+    const dynamicConfig = {
+      routes: [{
+        path: '/api/error',
+        upstreams: [{
+          target: 'http://mock-target.com',
+          weight: 100,
+          priority: 1,
+          headers: {
+            add: {
+              'x-valid': '{{headers.host}}',
+              'x-invalid': '{{headers.nonexistent.invalid}}',
+              'x-fallback': '{{headers.missing || "default"}}',
+            }
+          }
+        }],
+        failover: { enabled: false, retryableStatusCodes: [] },
+      }]
+    };
+
+    const req = new Request('http://localhost/api/error/test', {
+      headers: { 'host': 'example.com' }
+    });
+
+    await handleRequest(req, dynamicConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions) throw new Error('fetch was called without options');
+    const forwardedHeaders = new Headers(fetchOptions.headers);
+
+    expect(forwardedHeaders.get('x-valid')).toBe('example.com');
+    // Invalid expression should be skipped due to error handling
+    expect(forwardedHeaders.has('x-invalid')).toBe(false);
+    expect(forwardedHeaders.get('x-fallback')).toBe('default');
   });
 });
