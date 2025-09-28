@@ -1,0 +1,37 @@
+{
+  "name": "bungee",
+  "version": "1.0.0",
+  "description": "A high-performance reverse proxy server built with Bun and TypeScript, featuring hot configuration reloading and multi-process architecture.",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/master.ts",
+    "dev": "bun --watch run src/master.ts",
+    "test": "bun test",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "pino": "^9.1.0"
+  },
+  "devDependencies": {
+    "@commitlint/config-conventional": "^20.0.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.6",
+    "@types/bun": "^1.2.22",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.5.2",
+    "commitlint": "^20.0.0",
+    "husky": "^9.1.7",
+    "pino-pretty": "^11.2.1",
+    "pino-roll": "^3.1.0",
+    "semantic-release": "^24.2.9"
+  },
+  "keywords": [
+    "reverse-proxy",
+    "bun",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT"
+}

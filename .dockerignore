@@ -1,0 +1,24 @@
+# .dockerignore
+
+# Git files
+.git
+.gitignore
+
+# Node modules
+node_modules
+
+# Logs
+logs
+*.log
+
+# Environment variables
+.env
+.env.*
+
+# Docker files
+Dockerfile
+docker-compose.yml
+
+# Other
+.DS_Store
+README.md

@@ -1,0 +1,52 @@
+{
+  "bodyParserLimit": "50mb",
+  "routes": [
+    {
+      "path": "/api/simple",
+      "upstreams": [
+        {
+          "target": "http://single-service.example.com",
+          "weight": 100,
+          "headers": {
+            "add": { "x-request-id": "generated-by-proxy" }
+          },
+          "body": {
+            "add": { "proxy_processed": true }
+          }
+        }
+      ]
+    },
+    {
+      "path": "/api/load-balanced-with-override",
+      "headers": {
+        "add": { "x-common": "true", "x-version": "v1" },
+        "remove": ["x-internal-debug"]
+      },
+      "upstreams": [
+        { "target": "http://service-a.example.com", "weight": 80 },
+        {
+          "target": "http://service-b-canary.example.com",
+          "weight": 20,
+          "headers": {
+            "add": { "x-version": "v2-canary" }
+          }
+        }
+      ]
+    },
+    {
+      "path": "/api/critical",
+      "upstreams": [
+        { "target": "http://primary-critical-service.com", "weight": 100 },
+        { "target": "http://backup-critical-service.com", "weight": 100 }
+      ],
+      "failover": {
+        "enabled": true,
+        "retryableStatusCodes": [500, 502, 503, 504]
+      },
+      "healthCheck": {
+        "enabled": true,
+        "intervalSeconds": 10
+      }
+    }
+  ]
+}
