@@ -11,10 +11,12 @@ const mockConfig: AppConfig = {
       // Route-level rules
       headers: {
         add: { 'x-route-header': 'route', 'x-shared-header': 'route' },
+        replace: { 'x-replace-header': 'route-replaced' },
         remove: ['x-remove-route'],
       },
       body: {
         add: { route_field: 'route', shared_field: 'route' },
+        replace: { replace_field: 'route-replaced' },
         remove: ['remove_route'],
         default: { route_default: 'default' },
       },
@@ -26,10 +28,12 @@ const mockConfig: AppConfig = {
           // Upstream-level rules that merge and override
           headers: {
             add: { 'x-upstream-header': 'upstream', 'x-shared-header': 'upstream-override' },
+            replace: { 'x-replace-header': 'upstream-replaced' },
             remove: ['x-remove-upstream'],
           },
           body: {
             add: { upstream_field: 'upstream', shared_field: 'upstream-override' },
+            replace: { replace_field: 'upstream-replaced' },
             remove: ['remove_upstream'],
           },
         },
@@ -352,5 +356,91 @@ describe('Server Request Handler', () => {
     expect(testUpstream.weight).toBe(100);
     expect(testUpstream.priority).toBe(1);
     expect(testUpstream.target).toBe('http://test.com');
+  });
+
+  test('should replace headers only when they exist', async () => {
+    const req = new Request('http://localhost/api/test', {
+      headers: {
+        'x-replace-header': 'original-value',
+        'x-non-replace-header': 'keep-this',
+      }
+    });
+
+    await handleRequest(req, mockConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions) throw new Error('fetch was called without options');
+    const forwardedHeaders = new Headers(fetchOptions.headers);
+
+    // Should replace existing header with upstream value (upstream overrides route)
+    expect(forwardedHeaders.get('x-replace-header')).toBe('upstream-replaced');
+    // Should keep non-replace header unchanged
+    expect(forwardedHeaders.get('x-non-replace-header')).toBe('keep-this');
+  });
+
+  test('should not replace headers when they do not exist', async () => {
+    const req = new Request('http://localhost/api/test', {
+      headers: {
+        'x-other-header': 'some-value',
+      }
+    });
+
+    await handleRequest(req, mockConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions) throw new Error('fetch was called without options');
+    const forwardedHeaders = new Headers(fetchOptions.headers);
+
+    // Should not add x-replace-header since it didn't exist originally
+    expect(forwardedHeaders.has('x-replace-header')).toBe(false);
+    // Should keep other header
+    expect(forwardedHeaders.get('x-other-header')).toBe('some-value');
+  });
+
+  test('should replace body fields only when they exist', async () => {
+    const originalBody = {
+      replace_field: 'original-value',
+      other_field: 'keep-this',
+    };
+
+    const req = new Request('http://localhost/api/json-test', {
+      method: 'POST',
+      body: JSON.stringify(originalBody),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await handleRequest(req, mockConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions || !fetchOptions.body) throw new Error('fetch was called without a body');
+    const forwardedBody = JSON.parse(fetchOptions.body as string);
+
+    // Should replace existing field with upstream value (upstream overrides route)
+    expect(forwardedBody.replace_field).toBe('upstream-replaced');
+    // Should keep non-replace field unchanged
+    expect(forwardedBody.other_field).toBe('keep-this');
+  });
+
+  test('should not replace body fields when they do not exist', async () => {
+    const originalBody = {
+      other_field: 'some-value',
+    };
+
+    const req = new Request('http://localhost/api/json-test', {
+      method: 'POST',
+      body: JSON.stringify(originalBody),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    await handleRequest(req, mockConfig);
+
+    const fetchOptions = mockedFetch.mock.calls[0][1];
+    if (!fetchOptions || !fetchOptions.body) throw new Error('fetch was called without a body');
+    const forwardedBody = JSON.parse(fetchOptions.body as string);
+
+    // Should not add replace_field since it didn't exist originally
+    expect(forwardedBody).not.toHaveProperty('replace_field');
+    // Should keep other field
+    expect(forwardedBody.other_field).toBe('some-value');
   });
 });

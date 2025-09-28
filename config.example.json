@@ -20,7 +20,12 @@
       "path": "/api/load-balanced-with-override",
       "headers": {
         "add": { "x-common": "true", "x-version": "v1" },
+        "replace": { "user-agent": "proxy/1.0" },
         "remove": ["x-internal-debug"]
+      },
+      "body": {
+        "replace": { "api_version": "v2" },
+        "default": { "timeout": 30 }
       },
       "upstreams": [
         { "target": "http://service-a.example.com", "weight": 80, "priority": 1 },
@@ -29,7 +34,11 @@
           "weight": 20,
           "priority": 1,
           "headers": {
-            "add": { "x-version": "v2-canary" }
+            "add": { "x-version": "v2-canary" },
+            "replace": { "authorization": "Bearer canary-token" }
+          },
+          "body": {
+            "replace": { "environment": "canary" }
           }
         }
       ]

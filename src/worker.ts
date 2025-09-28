@@ -92,10 +92,12 @@ function mergeRules(routeRules: ModificationRules, upstreamRules: ModificationRu
   const merged: ModificationRules = {
     headers: {
       add: { ...routeRules.headers?.add, ...upstreamRules.headers?.add },
+      replace: { ...routeRules.headers?.replace, ...upstreamRules.headers?.replace },
       remove: [...(routeRules.headers?.remove || []), ...(upstreamRules.headers?.remove || [])],
     },
     body: {
       add: { ...routeRules.body?.add, ...upstreamRules.body?.add },
+      replace: { ...routeRules.body?.replace, ...upstreamRules.body?.replace },
       remove: [...(routeRules.body?.remove || []), ...(upstreamRules.body?.remove || [])],
       default: { ...routeRules.body?.default, ...upstreamRules.body?.default },
     },
@@ -250,16 +252,24 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
   headers.delete('host');
 
   if (rules.headers) {
-    if (rules.headers.add) {
-      for (const [key, value] of Object.entries(rules.headers.add)) {
-        headers.set(key, value);
-        logger.debug({ request: requestLog, header: { key } }, 'Added/Overwrote header');
-      }
-    }
     if (rules.headers.remove) {
       for (const key of rules.headers.remove) {
         headers.delete(key);
         logger.debug({ request: requestLog, header: { key } }, 'Removed header');
+      }
+    }
+    if (rules.headers.replace) {
+      for (const [key, value] of Object.entries(rules.headers.replace)) {
+        if (headers.has(key)) {
+          headers.set(key, value);
+          logger.debug({ request: requestLog, header: { key } }, 'Replaced header');
+        }
+      }
+    }
+    if (rules.headers.add) {
+      for (const [key, value] of Object.entries(rules.headers.add)) {
+        headers.set(key, value);
+        logger.debug({ request: requestLog, header: { key } }, 'Added/Overwrote header');
       }
     }
   }
@@ -270,11 +280,17 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
   if (rules.body && req.body && contentType.includes('application/json')) {
     try {
       let modifiedBody = await req.clone().json() as Record<string, any>;
-      if (rules.body.default) {
-        for (const [key, value] of Object.entries(rules.body.default)) {
-          if (modifiedBody[key] === undefined) {
+      if (rules.body.remove) {
+        for (const key of rules.body.remove) {
+          delete modifiedBody[key];
+          logger.debug({ request: requestLog, body: { key } }, `Removed body field`);
+        }
+      }
+      if (rules.body.replace) {
+        for (const [key, value] of Object.entries(rules.body.replace)) {
+          if (key in modifiedBody) {
             modifiedBody[key] = value;
-            logger.debug({ request: requestLog, body: { key } }, `Defaulted body field`);
+            logger.debug({ request: requestLog, body: { key } }, `Replaced body field`);
           }
         }
       }
@@ -284,10 +300,12 @@ async function prepareRequest(req: Request, rules: ModificationRules, requestLog
           logger.debug({ request: requestLog, body: { key } }, `Added/Overwrote body field`);
         }
       }
-      if (rules.body.remove) {
-        for (const key of rules.body.remove) {
-          delete modifiedBody[key];
-          logger.debug({ request: requestLog, body: { key } }, `Removed body field`);
+      if (rules.body.default) {
+        for (const [key, value] of Object.entries(rules.body.default)) {
+          if (modifiedBody[key] === undefined) {
+            modifiedBody[key] = value;
+            logger.debug({ request: requestLog, body: { key } }, `Defaulted body field`);
+          }
         }
       }
       logger.info({ request: requestLog, keys: Object.keys(modifiedBody) }, '--- Modified Body Keys ---');

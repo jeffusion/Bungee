@@ -5,10 +5,12 @@ import { logger } from './logger';
 export interface ModificationRules {
   headers?: {
     add?: Record<string, string>;
+    replace?: Record<string, string>;
     remove?: string[];
   };
   body?: {
     add?: Record<string, any>;
+    replace?: Record<string, any>;
     remove?: string[];
     default?: Record<string, any>;
   };
