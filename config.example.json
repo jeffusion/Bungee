@@ -6,7 +6,7 @@
       "upstreams": [
         {
           "target": "http://single-service.example.com",
-          "weight": 100,
+          "priority": 1,
           "headers": {
             "add": { "x-request-id": "generated-by-proxy" }
           },
@@ -23,10 +23,11 @@
         "remove": ["x-internal-debug"]
       },
       "upstreams": [
-        { "target": "http://service-a.example.com", "weight": 80 },
+        { "target": "http://service-a.example.com", "weight": 80, "priority": 1 },
         {
           "target": "http://service-b-canary.example.com",
           "weight": 20,
+          "priority": 1,
           "headers": {
             "add": { "x-version": "v2-canary" }
           }
@@ -36,8 +37,9 @@
     {
       "path": "/api/critical",
       "upstreams": [
-        { "target": "http://primary-critical-service.com", "weight": 100 },
-        { "target": "http://backup-critical-service.com", "weight": 100 }
+        { "target": "http://primary-critical-service.com", "priority": 1 },
+        { "target": "http://backup-critical-service.com", "weight": 100, "priority": 1 },
+        { "target": "http://fallback-critical-service.com", "weight": 50, "priority": 2 }
       ],
       "failover": {
         "enabled": true,

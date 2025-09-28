@@ -1,6 +1,7 @@
 # Bun
 .bunx/
 node_modules/
+dist/
 
 # Logs
 logs

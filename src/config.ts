@@ -16,7 +16,8 @@ export interface ModificationRules {
 
 export interface Upstream extends ModificationRules {
   target: string;
-  weight: number;
+  weight?: number; // 权重，默认为 100
+  priority?: number; // 数字越小优先级越高，默认为 1
 }
 
 export interface RouteConfig extends ModificationRules {
@@ -59,8 +60,24 @@ async function loadConfig(): Promise<AppConfig> {
       }
       let totalWeight = 0;
       for (const upstream of route.upstreams) {
-        if (typeof upstream.target !== 'string' || typeof upstream.weight !== 'number' || upstream.weight <= 0) {
-          logger.error(`Invalid upstream in route for path "${route.path}". Each upstream must have a string "target" and a positive number "weight".`);
+        if (typeof upstream.target !== 'string') {
+          logger.error(`Invalid upstream in route for path "${route.path}". Each upstream must have a string "target".`);
+          process.exit(1);
+        }
+
+        // 设置默认 weight 为 100，验证 weight 值
+        if (upstream.weight === undefined) {
+          upstream.weight = 100;
+        } else if (typeof upstream.weight !== 'number' || upstream.weight <= 0) {
+          logger.error(`Invalid weight in route for path "${route.path}". Weight must be a positive number.`);
+          process.exit(1);
+        }
+
+        // 设置默认 priority 为 1，验证 priority 值
+        if (upstream.priority === undefined) {
+          upstream.priority = 1;
+        } else if (typeof upstream.priority !== 'number' || upstream.priority <= 0) {
+          logger.error(`Invalid priority in route for path "${route.path}". Priority must be a positive number.`);
           process.exit(1);
         }
         totalWeight += upstream.weight;

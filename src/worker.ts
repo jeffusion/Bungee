@@ -47,16 +47,45 @@ healthChecker.onmessage = (event: MessageEvent<{ status: string; target: string 
 const PORT = process.env.PORT || 3000;
 
 function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefined {
-  const totalWeight = upstreams.reduce((sum, up) => sum + up.weight, 0);
-  let random = Math.random() * totalWeight;
+  if (upstreams.length === 0) return undefined;
 
-  for (const upstream of upstreams) {
-    random -= upstream.weight;
-    if (random <= 0) {
-      return upstream;
+  // 按优先级分组 (priority 值越小优先级越高)
+  const priorityGroups = new Map<number, RuntimeUpstream[]>();
+
+  upstreams.forEach(upstream => {
+    const priority = upstream.priority || 1;
+    if (!priorityGroups.has(priority)) {
+      priorityGroups.set(priority, []);
+    }
+    priorityGroups.get(priority)!.push(upstream);
+  });
+
+  // 获取排序后的优先级列表（从高到低）
+  const sortedPriorities = Array.from(priorityGroups.keys()).sort((a, b) => a - b);
+
+  // 依次尝试每个优先级组，选择第一个有可用 upstream 的组
+  for (const priority of sortedPriorities) {
+    const priorityUpstreams = priorityGroups.get(priority)!;
+
+    // 在同一优先级组内使用加权随机选择
+    const totalWeight = priorityUpstreams.reduce((sum, up) => sum + (up.weight ?? 100), 0);
+    if (totalWeight === 0) continue;
+
+    let random = Math.random() * totalWeight;
+    for (const upstream of priorityUpstreams) {
+      random -= upstream.weight ?? 100;
+      if (random <= 0) {
+        return upstream;
+      }
+    }
+
+    // 如果由于浮点精度问题没有选中，返回组内最后一个
+    if (priorityUpstreams.length > 0) {
+      return priorityUpstreams[priorityUpstreams.length - 1];
     }
   }
-  return upstreams[upstreams.length - 1];
+
+  return undefined;
 }
 
 function mergeRules(routeRules: ModificationRules, upstreamRules: ModificationRules): ModificationRules {
@@ -154,9 +183,14 @@ export async function handleRequest(
   const retryQueue = healthyUpstreams
     .filter(up => up.target !== firstTryUpstream.target)
     .sort((a, b) => {
-      if (a.weight === firstTryUpstream.weight) return -1;
-      if (b.weight === firstTryUpstream.weight) return 1;
-      return b.weight - a.weight;
+      // 首先按优先级排序（数字越小优先级越高）
+      const priorityA = a.priority || 1;
+      const priorityB = b.priority || 1;
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+      // 同一优先级内按权重排序（权重越高越优先）
+      return (b.weight ?? 100) - (a.weight ?? 100);
     });
 
   const attemptQueue = [firstTryUpstream, ...retryQueue];
@@ -273,7 +307,9 @@ export function startServer(config: AppConfig): Server {
   logger.info(`📋 Health check: http://localhost:${PORT}/health`);
   logger.info('\n📝 Configured routes:');
   config.routes.forEach(route => {
-    const targets = route.upstreams.map(up => `${up.target} (w: ${up.weight})`).join(', ');
+    const targets = route.upstreams.map(up =>
+      `${up.target} (w: ${up.weight}, p: ${up.priority || 1})`
+    ).join(', ');
     logger.info(`  ${route.path} -> [${targets}]`);
   });
   logger.info('\n');
