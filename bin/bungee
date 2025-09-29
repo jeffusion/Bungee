@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Bungee CLI Platform Detector and Launcher
+# This script detects the platform and executes the appropriate binary
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLATFORM=$(uname -s)
+ARCH=$(uname -m)
+BINARY_NAME=""
+
+# Determine the correct binary based on platform and architecture
+case $PLATFORM in
+  Linux*)
+    BINARY_NAME="bungee-linux"
+    ;;
+  Darwin*)
+    case $ARCH in
+      arm64|aarch64)
+        BINARY_NAME="bungee-macos-arm64"
+        ;;
+      x86_64|amd64)
+        BINARY_NAME="bungee-macos"
+        ;;
+      *)
+        echo "❌ Unsupported macOS architecture: $ARCH"
+        echo "💡 Supported architectures: x86_64, arm64"
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "❌ Unsupported platform: $PLATFORM"
+    echo "💡 Supported platforms: Linux, macOS"
+    echo "💡 For Windows support, please use WSL or Docker"
+    exit 1
+    ;;
+esac
+
+BINARY_PATH="$SCRIPT_DIR/$BINARY_NAME"
+
+# Check if the binary exists
+if [ ! -f "$BINARY_PATH" ]; then
+  echo "❌ Binary not found: $BINARY_PATH"
+  echo "💡 Please ensure the package was installed correctly"
+  echo "💡 Try reinstalling with: npm install -g bungee"
+  exit 1
+fi
+
+# Check if the binary is executable
+if [ ! -x "$BINARY_PATH" ]; then
+  echo "⚠️  Making binary executable..."
+  chmod +x "$BINARY_PATH"
+fi
+
+# Execute the appropriate binary with all passed arguments
+exec "$BINARY_PATH" "$@"

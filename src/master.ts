@@ -64,7 +64,7 @@ class Master {
                 env: {
                     ...process.env,
                     WORKER_ID: String(workerId),
-                    PORT: String(3000) // 所有worker共享同一个端口
+                    PORT: String(8088) // 所有worker共享同一个端口
                 },
             });
 

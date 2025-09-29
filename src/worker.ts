@@ -49,7 +49,7 @@ healthChecker.onmessage = (event: MessageEvent<{ status: string; target: string 
   }
 };
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8088;
 
 function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefined {
   if (upstreams.length === 0) return undefined;

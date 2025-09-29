@@ -127,7 +127,7 @@ graph TD
         Master -- Manages --> Worker2[Worker 2]
         Master -- Manages --> WorkerN[Worker N...]
 
-        Client[Clients] --> LB((Port 3000))
+        Client[Clients] --> LB((Port 8088))
         LB --> Worker1
         LB --> Worker2
         LB --> WorkerN
@@ -168,18 +168,105 @@ The project follows a standard structure for modern TypeScript applications:
 └── README.md              # This file
 ```
 
+## Quick Start with CLI
+
+Bungee can be used as a CLI tool without installing Bun runtime, thanks to compiled binaries that include everything needed.
+
+### Installation & Usage
+
+Use Bungee directly via npx:
+
+```bash
+# Initialize configuration (creates ~/.bungee/config.json)
+npx bungee init
+
+# Start the daemon
+npx bungee start
+
+# Check status
+npx bungee status
+
+# View logs
+npx bungee logs
+
+# Stop the daemon
+npx bungee stop
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `bungee init [path]` | Initialize configuration file (default: `~/.bungee/config.json`) |
+| `bungee start [config]` | Start proxy server as daemon (default config: `~/.bungee/config.json`) |
+| `bungee stop` | Stop proxy server daemon |
+| `bungee restart [config]` | Restart proxy server daemon |
+| `bungee status` | Show daemon status and health |
+| `bungee logs [options]` | Show daemon logs (`-f` to follow, `-n` for line count) |
+
+### CLI Options
+
+**Start/Restart Options:**
+- `-p, --port <port>`: Override default port
+- `-w, --workers <count>`: Number of worker processes (default: 2)
+
+**Init Options:**
+- `-f, --force`: Overwrite existing config file
+
+**Logs Options:**
+- `-f, --follow`: Follow log output (like `tail -f`)
+- `-n, --lines <number>`: Number of lines to show (default: 50)
+
+### Configuration Management
+
+Bungee uses `~/.bungee/` as the default data directory:
+
+```
+~/.bungee/
+├── config.json        # Default configuration file
+├── bungee.pid         # Process ID file
+├── bungee.log         # Standard output logs
+└── bungee.error.log   # Error logs
+```
+
+You can also use custom configuration files:
+
+```bash
+# Initialize custom config
+npx bungee init /path/to/my-config.json
+
+# Start with custom config
+npx bungee start /path/to/my-config.json
+```
+
 ## Getting Started
 
-### Prerequisites
+### For Production Use (Recommended)
+
+Use the CLI tool (no Bun installation required):
+
+```bash
+# Quick start with CLI
+npx bungee init        # Create config
+npx bungee start       # Start daemon
+```
+
+See the [CLI section](#quick-start-with-cli) above for complete usage.
+
+### For Development
+
+If you want to modify or contribute to Bungee:
+
+#### Prerequisites
 
 - [Bun](https://bun.sh/docs/installation) installed on your system.
 
-### Configuration
+#### Configuration
 
 1. **Edit `config.json`**:
     Modify the `config.json` file to define your routes and modification rules. See the configuration section below for details.
 
-### Running the Server
+#### Running the Server
 
 - **Development Mode** (with hot-reloading and pretty-printed logs):
 
@@ -404,7 +491,7 @@ The reverse proxy server is containerized and ready for production deployment us
 
    ```env
    WORKER_COUNT=2
-   PORT=3000
+   PORT=8088
    LOG_LEVEL=info
    ```
 
@@ -423,7 +510,7 @@ The reverse proxy server is containerized and ready for production deployment us
    ```bash
    docker run -d \
      --name bungee \
-     -p 3000:3000 \
+     -p 8088:8088 \
      -v $(pwd)/config.json:/usr/src/app/config.json:ro \
      -v $(pwd)/logs:/usr/src/app/logs \
      --env-file .env \
@@ -465,7 +552,7 @@ The container includes a built-in health check that monitors the `/health` endpo
 docker ps
 
 # Manual health check
-curl http://localhost:3000/health
+curl http://localhost:8088/health
 ```
 
 ### Production Considerations

@@ -22,9 +22,9 @@ RUN mkdir -p logs
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=8088
 
-EXPOSE 3000
+EXPOSE 8088
 
 # Use non-root user
 USER bun

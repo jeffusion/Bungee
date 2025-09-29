@@ -127,7 +127,7 @@ graph TD
         Master -- 管理 --> Worker2[工作进程 2]
         Master -- 管理 --> WorkerN[工作进程 N...]
 
-        Client[客户端] --> LB((端口 3000))
+        Client[客户端] --> LB((端口 8088))
         LB --> Worker1
         LB --> Worker2
         LB --> WorkerN
@@ -168,18 +168,105 @@ graph TD
 └── README.md           # 本文件
 ```
 
+## CLI 工具快速开始
+
+Bungee 可以作为 CLI 工具使用，无需安装 Bun 运行时，因为编译后的二进制文件包含了所有必需的依赖。
+
+### 安装和使用
+
+直接通过 npx 使用 Bungee：
+
+```bash
+# 初始化配置（创建 ~/.bungee/config.json）
+npx bungee init
+
+# 启动守护进程
+npx bungee start
+
+# 检查状态
+npx bungee status
+
+# 查看日志
+npx bungee logs
+
+# 停止守护进程
+npx bungee stop
+```
+
+### CLI 命令
+
+| 命令 | 描述 |
+|------|------|
+| `bungee init [path]` | 初始化配置文件（默认：`~/.bungee/config.json`） |
+| `bungee start [config]` | 启动代理服务器守护进程（默认配置：`~/.bungee/config.json`） |
+| `bungee stop` | 停止代理服务器守护进程 |
+| `bungee restart [config]` | 重启代理服务器守护进程 |
+| `bungee status` | 显示守护进程状态和健康信息 |
+| `bungee logs [options]` | 显示守护进程日志（`-f` 跟踪，`-n` 指定行数） |
+
+### CLI 选项
+
+**启动/重启选项：**
+- `-p, --port <port>`：覆盖默认端口
+- `-w, --workers <count>`：工作进程数量（默认：2）
+
+**初始化选项：**
+- `-f, --force`：覆盖现有配置文件
+
+**日志选项：**
+- `-f, --follow`：跟踪日志输出（类似 `tail -f`）
+- `-n, --lines <number>`：显示的行数（默认：50）
+
+### 配置管理
+
+Bungee 使用 `~/.bungee/` 作为默认数据目录：
+
+```
+~/.bungee/
+├── config.json        # 默认配置文件
+├── bungee.pid         # 进程 ID 文件
+├── bungee.log         # 标准输出日志
+└── bungee.error.log   # 错误日志
+```
+
+你也可以使用自定义配置文件：
+
+```bash
+# 初始化自定义配置
+npx bungee init /path/to/my-config.json
+
+# 使用自定义配置启动
+npx bungee start /path/to/my-config.json
+```
+
 ## 快速开始
 
-### 前置要求
+### 生产使用（推荐）
+
+使用 CLI 工具（无需安装 Bun）：
+
+```bash
+# CLI 快速开始
+npx bungee init        # 创建配置
+npx bungee start       # 启动守护进程
+```
+
+详细使用方法请参见上面的 [CLI 工具部分](#cli-工具快速开始)。
+
+### 开发使用
+
+如果你想修改或为 Bungee 贡献代码：
+
+#### 前置要求
 
 - 在你的系统上安装 [Bun](https://bun.sh/docs/installation)。
 
-### 配置
+#### 配置
 
 1. **编辑 `config.json`**：
    修改 `config.json` 文件以定义你的路由和修改规则。详细信息请参见下面的配置部分。
 
-### 运行服务器
+#### 运行服务器
 
 - **开发模式**（带热重载和美化打印的日志）：
 
@@ -404,7 +491,7 @@ graph TD
 
    ```env
    WORKER_COUNT=2
-   PORT=3000
+   PORT=8088
    LOG_LEVEL=info
    ```
 
@@ -423,7 +510,7 @@ graph TD
    ```bash
    docker run -d \
      --name bungee \
-     -p 3000:3000 \
+     -p 8088:8088 \
      -v $(pwd)/config.json:/usr/src/app/config.json:ro \
      -v $(pwd)/logs:/usr/src/app/logs \
      --env-file .env \
@@ -465,7 +552,7 @@ graph TD
 docker ps
 
 # 手动健康检查
-curl http://localhost:3000/health
+curl http://localhost:8088/health
 ```
 
 ### 生产注意事项

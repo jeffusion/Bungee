@@ -2,15 +2,27 @@
   "name": "bungee",
   "version": "1.0.0",
   "description": "A high-performance reverse proxy server built with Bun and TypeScript, featuring hot configuration reloading and multi-process architecture.",
-  "main": "src/index.ts",
+  "main": "dist/master.js",
+  "bin": {
+    "bungee": "./bin/bungee"
+  },
   "scripts": {
     "start": "bun run src/master.ts",
     "dev": "LOG_LEVEL=debug bun --watch run src/master.ts",
     "test": "bun test",
-    "prepare": "husky"
+    "prepare": "husky",
+    "build": "npm run build:clean && npm run build:compile && npm run build:binaries",
+    "build:clean": "rm -rf dist bin/bungee-*",
+    "build:compile": "bun build src/cli/index.ts --outdir dist --target bun && bun build src/master.ts --outdir dist --target bun",
+    "build:binaries": "npm run build:linux && npm run build:macos && npm run build:macos-arm",
+    "build:linux": "bun build --compile --target=bun-linux-x64 src/cli/index.ts --outfile bin/bungee-linux",
+    "build:macos": "bun build --compile --target=bun-darwin-x64 src/cli/index.ts --outfile bin/bungee-macos",
+    "build:macos-arm": "bun build --compile --target=bun-darwin-arm64 src/cli/index.ts --outfile bin/bungee-macos-arm64",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@types/lodash-es": "^4.17.12",
+    "commander": "^14.0.1",
     "dotenv": "^17.2.2",
     "lodash-es": "^4.17.21",
     "pino": "^9.1.0"
@@ -32,8 +44,22 @@
   "keywords": [
     "reverse-proxy",
     "bun",
-    "typescript"
+    "typescript",
+    "cli",
+    "daemon",
+    "proxy-server"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "preferGlobal": true,
+  "files": [
+    "bin/",
+    "dist/",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ]
 }

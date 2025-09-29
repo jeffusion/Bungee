@@ -3,6 +3,9 @@
 node_modules/
 dist/
 
+# Compiled binaries (keep the platform detection script bin/bungee)
+bin/bungee-*
+
 # Logs
 logs
 *.log
