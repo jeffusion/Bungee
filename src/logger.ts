@@ -8,14 +8,16 @@ if (!fs.existsSync(logsDir)) {
   fs.mkdirSync(logsDir, { recursive: true });
 }
 
+const logLevel = process.env.LOG_LEVEL || 'info';
+
 export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: logLevel,
   transport: {
     targets: [
       // 文件输出 - 使用 pino-roll 进行日志滚动和归档
       {
         target: 'pino-roll',
-        level: 'info',
+        level: logLevel,
         options: {
           file: path.join(logsDir, 'app.log'),
           frequency: 'daily', // 按天归档
@@ -29,7 +31,7 @@ export const logger = pino({
       // 控制台输出 - 开发环境使用 pino-pretty
       ...(process.env.NODE_ENV !== 'production' ? [{
         target: 'pino-pretty',
-        level: 'info',
+        level: logLevel,
         options: {
           colorize: true,
           translateTime: 'HH:MM:ss.l',

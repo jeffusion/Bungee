@@ -38,6 +38,65 @@
 
 该服务器允许你在 `config.json` 文件中定义路由规则，对于每个路由，你可以在将请求转发到目标服务之前动态修改请求头和正文。
 
+## 🎯 核心能力
+
+### 🧪 动态表达式引擎
+使用强大的表达式系统转换请求和响应：
+
+```json
+{
+  "headers": {
+    "add": {
+      "Authorization": "Bearer {{ uuid() }}",
+      "X-User-ID": "{{ body.user?.id || 'anonymous' }}",
+      "X-Timestamp": "{{ now() }}"
+    }
+  },
+  "body": {
+    "add": {
+      "processed_at": "{{ new Date().toISOString() }}",
+      "client_ip": "{{ headers['x-forwarded-for'] || 'unknown' }}"
+    }
+  }
+}
+```
+
+### 🔀 API 格式转换
+无缝转换不同的 API 格式：
+
+```json
+{
+  "transformer": "anthropic-to-gemini",
+  "upstreams": [
+    {
+      "target": "https://gemini-api.googleapis.com",
+      "headers": { "add": { "Authorization": "Bearer YOUR_GEMINI_KEY" } }
+    }
+  ]
+}
+```
+
+**内置转换器：**
+- `anthropic-to-gemini`: 将 Claude API 调用转换为 Google Gemini 格式
+- `anthropic-to-openai`: 将 Claude API 调用转换为 OpenAI 格式
+
+### 🌊 流式响应支持
+具有状态机架构的实时流式转换：
+
+- **传输层**: 处理 SSE 解析和数据块管理
+- **业务层**: 使用动态表达式应用转换规则
+- **状态机**: 支持复杂转换的 start/chunk/end 阶段
+- **多事件支持**: 从单个输入生成多个事件
+
+### ⚡ 分层规则处理（洋葱模型）
+规则分层处理，实现最大灵活性：
+
+1. **路由层**: 路径下所有请求的基础规则
+2. **上游层**: 选定上游的特定规则
+3. **转换器层**: API 格式转换规则
+
+每一层都可以覆盖或扩展前一层的规则。
+
 ## 功能特性
 
 | 功能 | 描述 |
@@ -46,6 +105,10 @@
 | **🔄 零停机重载** | 修改你的 `config.json`，Bungee 将执行优雅的滚动重启其工作进程，无服务中断。 |
 | **⚖️ 多进程负载均衡** | 自动产生多个工作进程以利用所有可用的 CPU 核心，由操作系统处理负载均衡。 |
 | **🔧 动态配置** | 所有路由和修改规则都在简单的 `config.json` 文件中定义。无需复杂脚本。 |
+| **🧪 动态表达式引擎** | 强大的表达式引擎，内置 40+ 函数，使用 `{{ }}` 语法进行动态请求/响应转换。 |
+| **🔀 API 格式转换** | 内置转换器，实现无缝 API 兼容性（如 `anthropic-to-gemini`、`anthropic-to-openai`）。 |
+| **🌊 流式响应支持** | 先进的流式转换架构，具有状态机模式，实现实时 API 格式转换。 |
+| **⚡ 分层规则处理** | 洋葱模型规则执行，包含路由、上游和转换器层，提供最大灵活性。 |
 | **✍️ 请求头和正文修改** | 为任何路由或上游动态添加、删除或设置请求头和 JSON 正文的默认字段。 |
 | **🔗 故障转移和健康检查** | 自动检测不健康的上游并将流量重新路由到健康的上游。 |
 | **📜 结构化日志** | 使用 [Pino](https://getpino.io/) 的生产就绪结构化日志，支持日志轮转、归档和自动清理。 |
@@ -84,10 +147,17 @@ graph TD
 ```
 .
 ├── src/
-│   ├── master.ts       # 主进程入口点
-│   ├── worker.ts       # 工作进程（服务器逻辑）
-│   ├── config.ts       # 配置加载和验证
-│   └── logger.ts       # Pino 日志设置
+│   ├── master.ts          # 主进程入口点
+│   ├── worker.ts          # 工作进程（服务器逻辑）
+│   ├── config.ts          # 配置加载和验证
+│   ├── logger.ts          # Pino 日志设置
+│   ├── expression-engine.ts # 动态表达式引擎
+│   ├── streaming.ts       # 流式转换引擎
+│   └── transformers.ts    # 内置 API 转换器
+├── tests/
+│   ├── transformer.test.ts  # 转换器功能测试
+│   ├── streaming.test.ts    # 流式转换测试
+│   └── expression-engine.test.ts # 表达式引擎测试
 ├── config.json         # 服务器配置文件
 ├── package.json        # 项目元数据和脚本
 ├── tsconfig.json       # TypeScript 配置
@@ -129,21 +199,140 @@ graph TD
 
 服务器完全通过 `config.json` 文件进行配置。
 
+### 基本结构
+
 - `bodyParserLimit`：（可选）要解析的请求正文的最大大小（例如，"50mb"）。默认为 "1mb"。
 - `routes`：路由对象数组。
+
+### 路由配置
 
 每个 `route` 对象具有以下属性：
 
 - `path`：匹配此路由的 URL 路径前缀。
+- `pathRewrite`：（可选）使用正则表达式模式重写请求路径的对象。
 - `upstreams`：**必需**的一个或多个上游对象数组。
 - `headers`、`body`：（可选）应用于所有上游的**路由级**修改规则。
+- `transformer`：（可选）内置转换器名称（如 `"anthropic-to-gemini"`）。
 - `failover`、`healthCheck`：（可选）高可用性配置。
+
+### 上游配置
 
 `upstreams` 数组中的每个 `upstream` 对象有：
 
 - `target`：上游服务的 URL。
-- `weight`：表示流量比例的数字。
+- `weight`：（可选）表示负载均衡流量比例的数字。
+- `priority`：（可选）较小的数字 = 故障转移时的较高优先级。
+- `transformer`：（可选）上游特定的转换器配置。
 - `headers`、`body`：（可选）**上游级**规则，**与路由级规则合并并覆盖**。
+
+### 动态表达式
+
+使用 `{{ }}` 语法进行动态值，可访问：
+
+**上下文变量：**
+- `headers`：请求头对象
+- `body`：解析的请求正文
+- `url`：URL 组件（pathname、search、host、protocol）
+- `method`：HTTP 方法
+- `env`：环境变量
+- `stream`：流式上下文（phase、chunkIndex）- 仅用于流式规则
+
+**内置函数（40+）：**
+- **加密**：`uuid()`、`randomInt()`、`sha256()`、`md5()`
+- **字符串**：`base64encode()`、`base64decode()`、`trim()`、`split()`
+- **JSON**：`jsonParse()`、`jsonStringify()`、`parseJWT()`
+- **数组**：`first()`、`last()`、`length()`、`keys()`、`values()`
+- **工具**：`deepClean()`、`isString()`、`isArray()`、`now()`
+
+### 转换器配置
+
+转换器可以配置为：
+
+1. **字符串引用**：`"transformer": "anthropic-to-gemini"`
+2. **内联对象**：具有路径、请求和响应部分的自定义转换规则
+3. **数组**：多个转换规则
+
+**内置转换器：**
+
+#### `anthropic-to-gemini`
+将 Claude API 格式转换为 Google Gemini API：
+- 转换消息格式和工具模式
+- 处理具有适当事件序列的流式响应
+- 支持非流式和流式模式
+
+#### `anthropic-to-openai`
+将 Claude API 格式转换为 OpenAI API：
+- 映射消息结构和响应格式
+- 处理令牌计数和使用元数据
+- 支持流式增量响应
+
+### 流式转换
+
+对于流式响应，转换器支持状态机规则：
+
+```json
+{
+  "transformer": {
+    "response": [{
+      "match": { "status": "^2..$" },
+      "rules": {
+        "stream": {
+          "start": {
+            "body": {
+              "add": { "type": "message_start", "message": {...} }
+            }
+          },
+          "chunk": {
+            "body": {
+              "add": {
+                "type": "{{ stream.chunkIndex === 0 ? 'content_block_start' : 'content_block_delta' }}",
+                "index": "{{ stream.chunkIndex }}"
+              }
+            }
+          },
+          "end": {
+            "body": {
+              "add": {
+                "__multi_events": [
+                  { "type": "message_delta", "delta": {...} },
+                  { "type": "message_stop" }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }]
+  }
+}
+```
+
+### 高级功能
+
+**多事件支持：**
+使用 `__multi_events` 数组从单个输入生成多个事件：
+
+```json
+{
+  "add": {
+    "__multi_events": [
+      { "type": "event1", "data": "first" },
+      { "type": "event2", "data": "second" }
+    ]
+  }
+}
+```
+
+**对象清理：**
+递归删除不需要的字段：
+
+```json
+{
+  "add": {
+    "cleaned_schema": "{{ deepClean(body.schema, ['$schema', 'additionalProperties']) }}"
+  }
+}
+```
 
 ## 规则合并逻辑
 

@@ -13,6 +13,10 @@ export interface ExpressionContext {
   };
   method: string;
   env: Record<string, string>;
+  stream?: {
+    phase: string;
+    chunkIndex: number;
+  };
 }
 
 // 检查是否在测试环境
@@ -79,6 +83,33 @@ const builtinFunctions = {
   isNumber: (val: any) => typeof val === 'number',
   isObject: (val: any) => typeof val === 'object' && val !== null,
   isArray: (val: any) => Array.isArray(val),
+
+  // 通用的深度对象清理函数 - 移除指定的字段
+  deepClean: (obj: any, fieldsToRemove: string[] = ['$schema', 'additionalProperties', 'title']): any => {
+    if (!obj || typeof obj !== 'object') return obj;
+
+    const clean = (current: any): any => {
+      if (Array.isArray(current)) {
+        return current.map(clean);
+      }
+
+      if (current && typeof current === 'object') {
+        const cleaned: any = {};
+        for (const [key, value] of Object.entries(current)) {
+          // 跳过指定要移除的字段
+          if (fieldsToRemove.includes(key)) {
+            continue;
+          }
+          cleaned[key] = clean(value);
+        }
+        return cleaned;
+      }
+
+      return current;
+    };
+
+    return clean(obj);
+  },
 };
 
 // 安全的表达式求值器 - 使用简单的函数调用而非完整的JavaScript解析
@@ -113,6 +144,7 @@ class SafeEvaluator {
         url: this.context.url,
         method: this.context.method,
         env: this.context.env,
+        stream: this.context.stream,
         ...this.functions,
       };
 
@@ -164,42 +196,54 @@ export function evaluateExpression(expression: string, context: ExpressionContex
 
 // 处理动态值：检测并执行表达式
 export function processDynamicValue(value: any, context: ExpressionContext): any {
-  if (typeof value !== 'string') {
-    return value;
-  }
+  const _recursiveProcess = (currentValue: any): any => {
+    if (typeof currentValue === 'string') {
+      // 字符串：执行表达式替换
+      const expressionRegex = /\{\{(.+?)\}\}/g;
+      const matches = Array.from(currentValue.matchAll(expressionRegex));
 
-  // 检测是否包含表达式语法 {{...}}
-  const expressionRegex = /\{\{(.+?)\}\}/g;
-  const matches = Array.from(value.matchAll(expressionRegex));
-
-  if (matches.length === 0) {
-    // 没有表达式，返回原值
-    return value;
-  }
-
-  if (matches.length === 1 && matches[0][0] === value) {
-    // 整个值就是一个表达式，直接返回计算结果
-    return evaluateExpression(matches[0][1], context);
-  }
-
-  // 字符串中包含多个表达式，进行替换
-  let result = value;
-  for (const match of matches) {
-    const [fullMatch, expression] = match;
-    try {
-      const evaluated = evaluateExpression(expression, context);
-      result = result.replace(fullMatch, String(evaluated));
-    } catch (error) {
-      // 只在非测试环境下记录警告日志
-      if (!isTestEnvironment) {
-        logger.warn({ expression, error }, 'Expression evaluation failed in template string');
+      if (matches.length === 0) {
+        return currentValue;
       }
-      // 对于模板字符串中的错误，保持原占位符
-      // 这样可以在日志中看到哪个表达式出错了
-    }
-  }
 
-  return result;
+      if (matches.length === 1 && matches[0][0] === currentValue) {
+        return evaluateExpression(matches[0][1], context);
+      }
+
+      let result = currentValue;
+      for (const match of matches) {
+        const [fullMatch, expression] = match;
+        try {
+          const evaluated = evaluateExpression(expression, context);
+          result = result.replace(fullMatch, String(evaluated));
+        } catch (error) {
+          if (!isTestEnvironment) {
+            logger.warn({ expression, error }, 'Expression evaluation failed in template string');
+          }
+        }
+      }
+      return result;
+
+    } else if (Array.isArray(currentValue)) {
+      // 数组：递归处理每一项
+      return currentValue.map(item => _recursiveProcess(item));
+
+    } else if (typeof currentValue === 'object' && currentValue !== null) {
+      // 对象：递归处理每一个值
+      const newObj: Record<string, any> = {};
+      for (const key in currentValue) {
+        if (Object.prototype.hasOwnProperty.call(currentValue, key)) {
+          newObj[key] = _recursiveProcess(currentValue[key]);
+        }
+      }
+      return newObj;
+    }
+
+    // 其他类型：直接返回
+    return currentValue;
+  };
+
+  return _recursiveProcess(value);
 }
 
 // 清理表达式缓存（用于测试或内存管理）

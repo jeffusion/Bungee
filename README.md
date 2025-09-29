@@ -38,6 +38,65 @@ Unlike traditional reverse proxies like Nginx, Bungee allows you to manage your 
 
 This server allows you to define routing rules in a `config.json` file, and for each route, you can dynamically modify request headers and bodies before they are forwarded to the target service.
 
+## 🎯 Core Capabilities
+
+### 🧪 Dynamic Expression Engine
+Transform requests and responses with a powerful expression system:
+
+```json
+{
+  "headers": {
+    "add": {
+      "Authorization": "Bearer {{ crypto.randomUUID() }}",
+      "X-User-ID": "{{ body.user?.id || 'anonymous' }}",
+      "X-Timestamp": "{{ Date.now() }}"
+    }
+  },
+  "body": {
+    "add": {
+      "processed_at": "{{ new Date().toISOString() }}",
+      "client_ip": "{{ headers['x-forwarded-for'] || 'unknown' }}"
+    }
+  }
+}
+```
+
+### 🔀 API Format Transformation
+Seamlessly convert between different API formats:
+
+```json
+{
+  "transformer": "anthropic-to-gemini",
+  "upstreams": [
+    {
+      "target": "https://gemini-api.googleapis.com",
+      "headers": { "add": { "Authorization": "Bearer YOUR_GEMINI_KEY" } }
+    }
+  ]
+}
+```
+
+**Built-in Transformers:**
+- `anthropic-to-gemini`: Convert Claude API calls to Google Gemini format
+- `anthropic-to-openai`: Convert Claude API calls to OpenAI format
+
+### 🌊 Streaming Support
+Real-time streaming transformation with state machine architecture:
+
+- **Transport Layer**: Handles SSE parsing and chunk management
+- **Business Layer**: Applies transformation rules using dynamic expressions
+- **State Machine**: Supports start/chunk/end phases for complex transformations
+- **Multi-event Support**: Generate multiple events from single input
+
+### ⚡ Layered Rule Processing (Onion Model)
+Rules are processed in layers for maximum flexibility:
+
+1. **Route Layer**: Base rules for all requests to a path
+2. **Upstream Layer**: Specific rules for selected upstream
+3. **Transformer Layer**: API format conversion rules
+
+Each layer can override or extend the previous layer's rules.
+
 ## Features
 
 | Feature | Description |
@@ -46,6 +105,10 @@ This server allows you to define routing rules in a `config.json` file, and for 
 | **🔄 Zero-Downtime Reloads** | Modify your `config.json` and Bungee will perform a graceful, rolling restart of its worker processes with no service interruption. |
 | **⚖️ Multi-Process Load Balancing**| Automatically spawns multiple worker processes to leverage all available CPU cores, with the OS handling load balancing. |
 | **🔧 Dynamic Configuration** | All routing and modification rules are defined in a simple `config.json` file. No complex scripting required. |
+| **🧪 Dynamic Expression Engine** | Powerful expression engine with 40+ built-in functions for dynamic request/response transformation using `{{ }}` syntax. |
+| **🔀 API Format Transformation** | Built-in transformers for seamless API compatibility (e.g., `anthropic-to-gemini`, `anthropic-to-openai`). |
+| **🌊 Streaming Response Support** | Advanced streaming transformation with state machine architecture for real-time API format conversion. |
+| **⚡ Layered Rule Processing** | Onion model rule execution with route, upstream, and transformer layers for maximum flexibility. |
 | **✍️ Header & Body Modification** | Add, remove, or set default fields in request headers and JSON bodies on-the-fly for any route or upstream. |
 | **🔗 Failover & Health Checks** | Automatically detects unhealthy upstreams and reroutes traffic to healthy ones. |
 | **📜 Structured Logging** | Production-ready structured logging with [Pino](https://getpino.io/), featuring log rotation, archival, and automatic cleanup. |
@@ -84,18 +147,25 @@ The project follows a standard structure for modern TypeScript applications:
 ```
 .
 ├── src/
-│   ├── master.ts       # Master process entry point
-│   ├── worker.ts       # Worker process (server logic)
-│   ├── config.ts       # Configuration loading and validation
-│   └── logger.ts       # Pino logger setup
-├── config.json         # Server configuration file
-├── package.json        # Project metadata and scripts
-├── tsconfig.json       # TypeScript configuration
-├── Dockerfile          # For building the container image
-├── docker-compose.yml  # For orchestrated deployment
-├── .dockerignore       # To exclude files from the Docker build
-├── .env.example        # Environment variable template
-└── README.md           # This file
+│   ├── master.ts          # Master process entry point
+│   ├── worker.ts          # Worker process (server logic)
+│   ├── config.ts          # Configuration loading and validation
+│   ├── logger.ts          # Pino logger setup
+│   ├── expression-engine.ts # Dynamic expression evaluation system
+│   ├── streaming.ts       # Streaming transformation engine
+│   └── transformers.ts    # Built-in API transformers
+├── tests/
+│   ├── transformer.test.ts  # Transformer functionality tests
+│   ├── streaming.test.ts    # Streaming transformation tests
+│   └── expression-engine.test.ts # Expression engine tests
+├── config.json            # Server configuration file
+├── package.json           # Project metadata and scripts
+├── tsconfig.json          # TypeScript configuration
+├── Dockerfile             # For building the container image
+├── docker-compose.yml     # For orchestrated deployment
+├── .dockerignore          # To exclude files from the Docker build
+├── .env.example           # Environment variable template
+└── README.md              # This file
 ```
 
 ## Getting Started
@@ -129,21 +199,140 @@ No `bun install` is needed, as Bun will automatically handle dependencies on the
 
 The server is configured entirely through the `config.json` file.
 
+### Basic Structure
+
 - `bodyParserLimit`: (Optional) The maximum size of the request body to parse (e.g., "50mb"). Defaults to "1mb".
 - `routes`: An array of route objects.
+
+### Route Configuration
 
 Each `route` object has the following properties:
 
 - `path`: The URL path prefix to match for this route.
+- `pathRewrite`: (Optional) Object with regex patterns to rewrite request paths.
 - `upstreams`: A **required** array of one or more upstream objects.
 - `headers`, `body`: (Optional) **Route-level** modification rules that apply to all upstreams.
+- `transformer`: (Optional) Built-in transformer name (e.g., `"anthropic-to-gemini"`).
 - `failover`, `healthCheck`: (Optional) High-availability configurations.
+
+### Upstream Configuration
 
 Each `upstream` object in the `upstreams` array has:
 
 - `target`: The URL of the upstream service.
-- `weight`: A number representing the traffic proportion.
+- `weight`: (Optional) A number representing the traffic proportion for load balancing.
+- `priority`: (Optional) Lower numbers = higher priority for failover.
+- `transformer`: (Optional) Upstream-specific transformer configuration.
 - `headers`, `body`: (Optional) **Upstream-level** rules that **merge with and override** the route-level rules.
+
+### Dynamic Expressions
+
+Use `{{ }}` syntax for dynamic values with access to:
+
+**Context Variables:**
+- `headers`: Request headers object
+- `body`: Parsed request body
+- `url`: URL components (pathname, search, host, protocol)
+- `method`: HTTP method
+- `env`: Environment variables
+- `stream`: Streaming context (phase, chunkIndex) - for streaming rules only
+
+**Built-in Functions (40+):**
+- **Crypto**: `uuid()`, `randomInt()`, `sha256()`, `md5()`
+- **Strings**: `base64encode()`, `base64decode()`, `trim()`, `split()`
+- **JSON**: `jsonParse()`, `jsonStringify()`, `parseJWT()`
+- **Arrays**: `first()`, `last()`, `length()`, `keys()`, `values()`
+- **Utility**: `deepClean()`, `isString()`, `isArray()`, `now()`
+
+### Transformer Configuration
+
+Transformers can be configured as:
+
+1. **String reference**: `"transformer": "anthropic-to-gemini"`
+2. **Inline object**: Custom transformation rules with path, request, and response sections
+3. **Array**: Multiple transformation rules
+
+**Built-in Transformers:**
+
+#### `anthropic-to-gemini`
+Converts Claude API format to Google Gemini API:
+- Transforms message format and tool schemas
+- Handles streaming responses with proper event sequencing
+- Supports both non-streaming and streaming modes
+
+#### `anthropic-to-openai`
+Converts Claude API format to OpenAI API:
+- Maps message structures and response formats
+- Handles token counting and usage metadata
+- Supports streaming delta responses
+
+### Streaming Transformation
+
+For streaming responses, transformers support state machine rules:
+
+```json
+{
+  "transformer": {
+    "response": [{
+      "match": { "status": "^2..$" },
+      "rules": {
+        "stream": {
+          "start": {
+            "body": {
+              "add": { "type": "message_start", "message": {...} }
+            }
+          },
+          "chunk": {
+            "body": {
+              "add": {
+                "type": "{{ stream.chunkIndex === 0 ? 'content_block_start' : 'content_block_delta' }}",
+                "index": "{{ stream.chunkIndex }}"
+              }
+            }
+          },
+          "end": {
+            "body": {
+              "add": {
+                "__multi_events": [
+                  { "type": "message_delta", "delta": {...} },
+                  { "type": "message_stop" }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }]
+  }
+}
+```
+
+### Advanced Features
+
+**Multi-event Support:**
+Use `__multi_events` array to generate multiple events from a single input:
+
+```json
+{
+  "add": {
+    "__multi_events": [
+      { "type": "event1", "data": "first" },
+      { "type": "event2", "data": "second" }
+    ]
+  }
+}
+```
+
+**Object Cleaning:**
+Remove unwanted fields recursively:
+
+```json
+{
+  "add": {
+    "cleaned_schema": "{{ deepClean(body.schema, ['$schema', 'additionalProperties']) }}"
+  }
+}
+```
 
 ## Rule Merging Logic
 

@@ -1,8 +1,12 @@
 import { logger } from './logger';
-import type { AppConfig, Upstream, RouteConfig, ModificationRules } from './config';
+import type { AppConfig, Upstream, RouteConfig, ModificationRules, TransformerConfig, ResponseRuleSet } from './config';
 import type { Server } from 'bun';
 import { loadConfig } from './config';
 import { processDynamicValue, type ExpressionContext } from './expression-engine';
+import { transformers } from './transformers';
+import { createSseTransformerStream } from './streaming';
+import { mergeWith, isArray } from 'lodash-es';
+
 
 // --- Runtime State Management ---
 interface RuntimeUpstream extends Upstream {
@@ -89,25 +93,6 @@ function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefin
   return undefined;
 }
 
-function mergeRules(routeRules: ModificationRules, upstreamRules: ModificationRules): ModificationRules {
-  const merged: ModificationRules = {
-    headers: {
-      add: { ...routeRules.headers?.add, ...upstreamRules.headers?.add },
-      replace: { ...routeRules.headers?.replace, ...upstreamRules.headers?.replace },
-      remove: [...(routeRules.headers?.remove || []), ...(upstreamRules.headers?.remove || [])],
-    },
-    body: {
-      add: { ...routeRules.body?.add, ...upstreamRules.body?.add },
-      replace: { ...routeRules.body?.replace, ...upstreamRules.body?.replace },
-      remove: [...(routeRules.body?.remove || []), ...(upstreamRules.body?.remove || [])],
-      default: { ...routeRules.body?.default, ...upstreamRules.body?.default },
-    },
-  };
-  if (merged.headers?.remove) merged.headers.remove = [...new Set(merged.headers.remove)];
-  if (merged.body?.remove) merged.body.remove = [...new Set(merged.body.remove)];
-  return merged;
-}
-
 export async function handleRequest(
   req: Request,
   config: AppConfig,
@@ -136,7 +121,6 @@ export async function handleRequest(
     logger.error({ request: requestLog }, `No route found for path: ${url.pathname}`);
     return new Response(JSON.stringify({ error: 'Route not found' }), { status: 404 });
   }
-
   const routeState = runtimeState.get(route.path);
   if (!routeState) {
     const staticUpstreams = route.upstreams.map(up => ({ ...up, status: 'HEALTHY', lastFailure: 0 } as RuntimeUpstream));
@@ -146,29 +130,6 @@ export async function handleRequest(
       return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 });
     }
     return await proxyRequest(req, route, selectedUpstream, requestLog);
-  }
-
-  const unhealthyUpstreams = routeState.upstreams.filter(up => up.status === 'UNHEALTHY');
-  if (unhealthyUpstreams.length > 0 && route.healthCheck?.enabled) {
-    const now = Date.now();
-    for (const upstream of unhealthyUpstreams) {
-      if (now - upstream.lastFailure > route.healthCheck.intervalSeconds * 1000) {
-        logger.info({ request: requestLog, target: upstream.target }, 'Triggering health check for unhealthy upstream.');
-
-        const bodyText = req.body ? await req.clone().text() : null;
-        healthChecker.postMessage({
-          target: upstream.target,
-          retryableStatusCodes: route.failover?.retryableStatusCodes || [],
-          requestData: {
-            url: new URL(url.pathname, upstream.target).href,
-            method: req.method,
-            headers: Array.from(req.headers.entries()),
-            body: bodyText,
-          },
-        });
-        upstream.lastFailure = now;
-      }
-    }
   }
 
   const healthyUpstreams = routeState.upstreams.filter(up => up.status === 'HEALTHY');
@@ -182,20 +143,7 @@ export async function handleRequest(
     logger.error({ request: requestLog }, 'Upstream selection failed.');
     return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
   }
-
-  const retryQueue = healthyUpstreams
-    .filter(up => up.target !== firstTryUpstream.target)
-    .sort((a, b) => {
-      // 首先按优先级排序（数字越小优先级越高）
-      const priorityA = a.priority || 1;
-      const priorityB = b.priority || 1;
-      if (priorityA !== priorityB) {
-        return priorityA - priorityB;
-      }
-      // 同一优先级内按权重排序（权重越高越优先）
-      return (b.weight ?? 100) - (a.weight ?? 100);
-    });
-
+  const retryQueue = healthyUpstreams.filter(up => up.target !== firstTryUpstream.target).sort((a,b) => (a.priority || 1) - (b.priority || 1) || (b.weight || 100) - (a.weight || 100));
   const attemptQueue = [firstTryUpstream, ...retryQueue];
 
   for (const upstream of attemptQueue) {
@@ -220,155 +168,358 @@ export async function handleRequest(
   return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
 }
 
+function deepMergeRules(base: ModificationRules, override: ModificationRules): ModificationRules {
+  const customizer = (objValue: any, srcValue: any) => {
+    if (isArray(objValue)) {
+      return [...new Set([...objValue, ...srcValue])];
+    }
+  };
+  return mergeWith({}, base, override, customizer);
+}
+
+function removeEmptyFields(obj: any): any {
+    if (obj === null || obj === undefined) {
+        return undefined;
+    }
+    if (Array.isArray(obj)) {
+        return obj.map(removeEmptyFields).filter(v => v !== undefined);
+    }
+    if (typeof obj === 'object') {
+        const newObj: { [key: string]: any } = {};
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const value = removeEmptyFields(obj[key]);
+                if (value !== undefined && value !== null && value !== '') {
+                    newObj[key] = value;
+                }
+            }
+        }
+        // If the object becomes empty after cleaning, return undefined so it can be removed by its parent.
+        return Object.keys(newObj).length > 0 ? newObj : undefined;
+    }
+    return obj;
+}
+
+export async function applyBodyRules(
+  body: Record<string, any>,
+  rules: ModificationRules['body'],
+  context: ExpressionContext,
+  requestLog: any
+): Promise<Record<string, any>> {
+  let modifiedBody = { ...body };
+  logger.debug({ request: requestLog, phase: 'before', body: modifiedBody }, "Body before applying rules");
+
+  if (rules) {
+    const processAndSet = (key: string, value: any, action: 'add' | 'replace' | 'default') => {
+        try {
+            const processedValue = processDynamicValue(value, context);
+            modifiedBody[key] = processedValue; // Assign first, clean up later
+            logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Applied body '${action}' rule (pre-cleanup)`);
+        } catch (err) {
+            logger.error({ request: requestLog, body: { key }, err }, `Failed to process dynamic body '${action}' rule`);
+        }
+    };
+
+    if (rules.add) {
+      for (const [key, value] of Object.entries(rules.add)) {
+        processAndSet(key, value, 'add');
+      }
+    }
+    if (rules.replace) {
+      for (const [key, value] of Object.entries(rules.replace)) {
+        if (key in modifiedBody || (rules.add && key in rules.add)) {
+          processAndSet(key, value, 'replace');
+        }
+      }
+    }
+    if (rules.default) {
+        for (const [key, value] of Object.entries(rules.default)) {
+          if (modifiedBody[key] === undefined) {
+            processAndSet(key, value, 'default');
+          }
+        }
+      }
+    if (rules.remove) {
+      for (const key of rules.remove) {
+        const wasAdded = rules.add && key in rules.add;
+        const wasReplaced = rules.replace && key in rules.replace;
+        if (!wasAdded && !wasReplaced) {
+            delete modifiedBody[key];
+            logger.debug({ request: requestLog, body: { key } }, `Removed body field`);
+        }
+      }
+    }
+  }
+
+  // Recursively clean the entire body at the end.
+  const finalCleanedBody = removeEmptyFields(modifiedBody);
+
+  // 检查是否有多事件标志
+  if (finalCleanedBody && finalCleanedBody.__multi_events && Array.isArray(finalCleanedBody.__multi_events)) {
+    logger.debug({ request: requestLog, eventCount: finalCleanedBody.__multi_events.length }, "Returning multiple events");
+    return finalCleanedBody.__multi_events;
+  }
+
+  logger.debug({ request: requestLog, phase: 'after', body: finalCleanedBody }, "Body after applying rules and cleanup");
+  return finalCleanedBody || {};
+}
+
 async function proxyRequest(req: Request, route: RouteConfig, upstream: Upstream, requestLog: any): Promise<Response> {
+  // 1. Set target URL and apply route-level pathRewrite
   const targetUrl = new URL(upstream.target);
+  const targetBasePath = targetUrl.pathname;
   targetUrl.pathname = new URL(req.url).pathname;
   targetUrl.search = new URL(req.url).search;
 
-  const finalRules = mergeRules(route, upstream);
-  const { headers, body } = await prepareRequest(req, finalRules, requestLog);
+  if (route.pathRewrite) {
+    const originalPathname = targetUrl.pathname;
+    for (const [pattern, replacement] of Object.entries(route.pathRewrite)) {
+      try {
+        const regex = new RegExp(pattern);
+        if (regex.test(targetUrl.pathname)) {
+          targetUrl.pathname = targetUrl.pathname.replace(regex, replacement);
+          logger.debug({ request: requestLog, path: { from: originalPathname, to: targetUrl.pathname }, rule: { pattern, replacement } }, `Applied route pathRewrite`);
+          break;
+        }
+      } catch (error) {
+        logger.error({ request: requestLog, pattern, error }, 'Invalid regex in pathRewrite rule');
+      }
+    }
+  }
 
-  logger.info({ request: requestLog, target: targetUrl.href }, `\n=== Proxying to target ===`);
+  // 2. Build initial context
+  const { context, isStreamingRequest, parsedBody } = await buildRequestContext(req, { pathname: targetUrl.pathname, search: targetUrl.search }, requestLog);
 
-  try {
-    const proxyRes = await fetch(targetUrl.href, {
-      method: req.method,
-      headers: headers,
-      body: body,
-      redirect: 'manual',
+  // 3. Find active transformer rule
+  const transformerConfig = upstream.transformer || route.transformer;
+
+  let transformerRules: TransformerConfig[] = [];
+  if (typeof transformerConfig === 'string') {
+    transformerRules = transformers[transformerConfig] || [];
+  } else if (Array.isArray(transformerConfig)) {
+    transformerRules = transformerConfig;
+  } else if (typeof transformerConfig === 'object' && transformerConfig !== null) {
+    transformerRules = [transformerConfig as TransformerConfig];
+  }
+
+  let activeTransformerRule: TransformerConfig | undefined;
+  if (transformerRules.length > 0) {
+    const currentPath = targetUrl.pathname;
+    activeTransformerRule = transformerRules.find(rule => {
+        try {
+            const matches = new RegExp(rule.path.match).test(currentPath);
+            return matches;
+        } catch (e) {
+            return false;
+        }
     });
-    logger.info({ request: requestLog, status: proxyRes.status }, `\n=== Streaming Response from target ===`);
-    return new Response(proxyRes.body, {
+  }
+
+  // 4. Build final request context following the Onion Model
+  // Layer 1 (Outer): Route and Upstream rules
+  const { path: routePath, upstreams, transformer: routeTransformer, ...routeModificationRules } = route;
+  const { target, weight, priority, transformer: upstreamTransformer, ...upstreamModificationRules } = upstream;
+  const routeAndUpstreamRequestRules = deepMergeRules(routeModificationRules, upstreamModificationRules);
+
+  let intermediateContext: ExpressionContext = { ...context };
+  let intermediateBody = parsedBody;
+  if(routeAndUpstreamRequestRules.body) {
+    intermediateBody = await applyBodyRules(parsedBody, routeAndUpstreamRequestRules.body, intermediateContext, requestLog);
+    intermediateContext.body = intermediateBody;
+  }
+
+  // 5a. Apply path transformation using the intermediate context (after upstream rules, before transformer body rules)
+  if (activeTransformerRule) {
+    logger.debug({ request: requestLog, pathMatch: activeTransformerRule.path.match }, `Activating transformer rule`);
+    const { match, replace } = activeTransformerRule.path;
+    try {
+        const originalPath = targetUrl.pathname;
+        const processedReplacement = processDynamicValue(replace, intermediateContext);
+        const newPath = originalPath.replace(new RegExp(match), processedReplacement);
+        const urlParts = newPath.split('?');
+        targetUrl.pathname = urlParts[0];
+        targetUrl.search = urlParts.length > 1 ? '?' + urlParts.slice(1).join('?') : '';
+        logger.debug({ request: requestLog, path: { from: originalPath, to: targetUrl.pathname + targetUrl.search, rule: match } }, `Applied transformer path rule`);
+    } catch(error) {
+        logger.error({ request: requestLog, rule: activeTransformerRule.path, error }, 'Failed to apply transformer path rule');
+    }
+  }
+
+  // 5b. Apply transformer body rules (Inner layer)
+  const transformerRequestRules = activeTransformerRule?.request || {};
+  let finalBody = intermediateBody;
+  if(transformerRequestRules.body) {
+    finalBody = await applyBodyRules(intermediateBody, transformerRequestRules.body, intermediateContext, requestLog);
+  }
+
+  // Rebuild context with the final body
+  const finalContext: ExpressionContext = { ...context, body: finalBody };
+
+  targetUrl.pathname = (targetBasePath === '/' ? '' : targetBasePath.replace(/\/$/, '')) + targetUrl.pathname;
+
+  // 6. Prepare final headers
+  const finalRequestRules = deepMergeRules(routeAndUpstreamRequestRules, transformerRequestRules);
+  const headers = new Headers(req.headers);
+  headers.delete('host');
+
+  if (finalRequestRules.headers) {
+    if (finalRequestRules.headers.remove) for (const key of finalRequestRules.headers.remove) headers.delete(key);
+    if (finalRequestRules.headers.replace) {
+        for (const [key, value] of Object.entries(finalRequestRules.headers.replace)) {
+            if (headers.has(key)) {
+                try { headers.set(key, String(processDynamicValue(value, finalContext))); }
+                catch (e) { logger.error({request: requestLog, error: (e as Error).message}, "Header replace expression failed") }
+            }
+        }
+    }
+    if (finalRequestRules.headers.add) {
+        for (const [key, value] of Object.entries(finalRequestRules.headers.add)) {
+            try { headers.set(key, String(processDynamicValue(value, finalContext))); }
+            catch (e) { logger.error({request: requestLog, error: (e as Error).message}, "Header add expression failed") }
+        }
+    }
+  }
+
+  // 7. Prepare final body
+  let body: BodyInit | null = req.body;
+  const contentType = req.headers.get('content-type') || '';
+  if (req.body && contentType.includes('application/json')) {
+    body = JSON.stringify(finalBody);
+    // Avoid setting Content-Length for empty bodies
+    if (Object.keys(finalBody).length > 0) {
+      headers.set('Content-Length', String(Buffer.byteLength(body as string)));
+    } else {
+        headers.delete('Content-Length');
+    }
+  }
+
+  // 8. Execute the request
+  logger.info({ request: requestLog, target: targetUrl.href }, `\n=== Proxying to target ===`);
+  try {
+    const proxyRes = await fetch(targetUrl.href, { method: req.method, headers, body, redirect: 'manual' });
+    logger.info({ request: requestLog, status: proxyRes.status }, `\n=== Received Response from target ===`);
+
+    // 9. Prepare the response (Response Onion)
+    let finalResponseRules: ModificationRules = {};
+    const responseRules = activeTransformerRule?.response;
+    let activeResponseRuleSet: ResponseRuleSet | undefined;
+
+    if (responseRules) {
+        for (const rule of responseRules) {
+            try {
+                const statusMatch = new RegExp(rule.match.status).test(String(proxyRes.status));
+                // Header matching logic can be added here in the future
+                if (statusMatch) {
+                    activeResponseRuleSet = rule.rules;
+                    logger.debug({ request: requestLog, match: rule.match }, "Found matching response rule");
+                    break; // Use the first matching rule
+                }
+            } catch (e) {
+                logger.error({ request: requestLog, rule, error: e }, "Invalid regex in response rule match");
+            }
+        }
+    }
+
+    if (activeResponseRuleSet) {
+        if (isStreamingRequest && activeResponseRuleSet.stream) {
+            // 对于流式请求，直接使用stream规则（可能是StreamTransformRules或ModificationRules）
+            finalResponseRules = activeResponseRuleSet.stream as any;
+        } else {
+            const responseRuleSet = activeResponseRuleSet.default;
+            // Response Onion - Inner layer (Transformer) is applied first, then merged with outer layer (Upstream)
+            finalResponseRules = deepMergeRules(responseRuleSet || {}, upstreamModificationRules);
+        }
+    } else {
+        finalResponseRules = upstreamModificationRules;
+    }
+
+    const { headers: responseHeaders, body: responseBody } = await prepareResponse(proxyRes, finalResponseRules, context, requestLog, isStreamingRequest);
+
+    return new Response(responseBody, {
       status: proxyRes.status,
       statusText: proxyRes.statusText,
-      headers: proxyRes.headers,
+      headers: responseHeaders,
     });
   } catch (error) {
     throw error;
   }
 }
 
-async function prepareRequest(req: Request, rules: ModificationRules, requestLog: any): Promise<{ headers: Headers; body: BodyInit | null }> {
-  const headers = new Headers(req.headers);
-  headers.delete('host');
+async function prepareResponse(
+  res: Response,
+  rules: ModificationRules,
+  requestContext: ExpressionContext,
+  requestLog: any,
+  isStreamingRequest: boolean
+): Promise<{ headers: Headers; body: BodyInit | null }> {
+  const headers = new Headers(res.headers);
+  const contentType = headers.get('content-type') || '';
 
-  // 构建表达式上下文
+  // Since we are buffering the body, we MUST remove chunked encoding headers.
+  headers.delete('transfer-encoding');
+  headers.delete('content-encoding');
+
+  if (isStreamingRequest && contentType.includes('text/event-stream') && res.body) {
+    logger.info({ request: requestLog }, '--- Applying SSE Stream Transformation ---');
+
+    // For streams, we don't modify content-length here as the final length is unknown.
+    return {
+      headers,
+      body: res.body.pipeThrough(createSseTransformerStream(rules, requestContext, requestLog)),
+    };
+  }
+
+  // Safely read the body as text first to avoid consuming the stream more than once.
+  const rawBodyText = await res.text();
+  logger.debug({ request: requestLog, responseBody: rawBodyText }, "Raw response body from upstream");
+  let body: BodyInit | null = rawBodyText;
+
+  if (rules.body && contentType.includes('application/json')) {
+    try {
+      // Only parse and modify if there is a body.
+      if (rawBodyText) {
+        const parsedBody = JSON.parse(rawBodyText);
+        const { body: _, ...baseRequestContext } = requestContext;
+        const responseContext: ExpressionContext = { ...baseRequestContext, body: parsedBody };
+        const modifiedBody = await applyBodyRules(parsedBody, rules.body, responseContext, requestLog);
+        body = JSON.stringify(modifiedBody);
+      } else {
+        logger.debug({ request: requestLog }, "Response body is empty, skipping modification.");
+      }
+    } catch (err) {
+      logger.error({ request: requestLog, error: err }, 'Failed to parse or modify JSON response body. Returning original body.');
+      // `body` already contains the original rawBodyText, so no action needed.
+    }
+  }
+
+  // Always calculate and set the final content-length as we have buffered the entire body.
+  const finalBody = body as string || '';
+  headers.set('Content-Length', String(Buffer.byteLength(finalBody)));
+
+  return { headers, body: finalBody };
+}
+
+async function buildRequestContext(req: Request, rewrittenPath: { pathname: string, search: string }, requestLog: any): Promise<{ context: ExpressionContext; isStreamingRequest: boolean; parsedBody: Record<string, any> }> {
   const url = new URL(req.url);
-  const context: ExpressionContext = {
-    headers: Object.fromEntries(req.headers.entries()),
-    body: {}, // 稍后填充
-    url: {
-      pathname: url.pathname,
-      search: url.search,
-      host: url.hostname,
-      protocol: url.protocol,
-    },
-    method: req.method,
-    env: process.env as Record<string, string>,
-  };
-
-  // 如果有JSON body，解析并添加到上下文
   let parsedBody: Record<string, any> = {};
   const contentType = req.headers.get('content-type') || '';
   if (req.body && contentType.includes('application/json')) {
     try {
       parsedBody = await req.clone().json();
-      context.body = parsedBody;
     } catch (err) {
       logger.warn({ request: requestLog, error: err }, 'Failed to parse JSON body for expression context');
     }
   }
 
-  if (rules.headers) {
-    if (rules.headers.remove) {
-      for (const key of rules.headers.remove) {
-        headers.delete(key);
-        logger.debug({ request: requestLog, header: { key } }, 'Removed header');
-      }
-    }
-    if (rules.headers.replace) {
-      for (const [key, value] of Object.entries(rules.headers.replace)) {
-        if (headers.has(key)) {
-          try {
-            const processedValue = processDynamicValue(value, context);
-            headers.set(key, String(processedValue));
-            logger.debug({ request: requestLog, header: { key, value: processedValue } }, 'Replaced header');
-          } catch (error) {
-            logger.error({ request: requestLog, header: { key }, error }, 'Failed to process dynamic header replace value');
-          }
-        }
-      }
-    }
-    if (rules.headers.add) {
-      for (const [key, value] of Object.entries(rules.headers.add)) {
-        try {
-          const processedValue = processDynamicValue(value, context);
-          headers.set(key, String(processedValue));
-          logger.debug({ request: requestLog, header: { key, value: processedValue } }, 'Added/Overwrote header');
-        } catch (error) {
-          logger.error({ request: requestLog, header: { key }, error }, 'Failed to process dynamic header add value');
-        }
-      }
-    }
-  }
+  const context: ExpressionContext = {
+    headers: Object.fromEntries(req.headers.entries()),
+    body: parsedBody,
+    url: { pathname: rewrittenPath.pathname, search: rewrittenPath.search, host: url.hostname, protocol: url.protocol },
+    method: req.method,
+    env: process.env as Record<string, string>,
+  };
 
-  let body: BodyInit | null = req.body;
-
-  if (rules.body && req.body && contentType.includes('application/json')) {
-    try {
-      let modifiedBody = { ...parsedBody };
-      if (rules.body.remove) {
-        for (const key of rules.body.remove) {
-          delete modifiedBody[key];
-          logger.debug({ request: requestLog, body: { key } }, `Removed body field`);
-        }
-      }
-      if (rules.body.replace) {
-        for (const [key, value] of Object.entries(rules.body.replace)) {
-          if (key in modifiedBody) {
-            try {
-              const processedValue = processDynamicValue(value, context);
-              modifiedBody[key] = processedValue;
-              logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Replaced body field`);
-            } catch (error) {
-              logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body replace value');
-            }
-          }
-        }
-      }
-      if (rules.body.add) {
-        for (const [key, value] of Object.entries(rules.body.add)) {
-          try {
-            const processedValue = processDynamicValue(value, context);
-            modifiedBody[key] = processedValue;
-            logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Added/Overwrote body field`);
-          } catch (error) {
-            logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body add value');
-          }
-        }
-      }
-      if (rules.body.default) {
-        for (const [key, value] of Object.entries(rules.body.default)) {
-          if (modifiedBody[key] === undefined) {
-            try {
-              const processedValue = processDynamicValue(value, context);
-              modifiedBody[key] = processedValue;
-              logger.debug({ request: requestLog, body: { key, value: processedValue } }, `Defaulted body field`);
-            } catch (error) {
-              logger.error({ request: requestLog, body: { key }, error }, 'Failed to process dynamic body default value');
-            }
-          }
-        }
-      }
-      logger.info({ request: requestLog, keys: Object.keys(modifiedBody) }, '--- Modified Body Keys ---');
-      body = JSON.stringify(modifiedBody);
-      headers.set('Content-Length', String(Buffer.byteLength(body as string)));
-    } catch (err) {
-      logger.error({ request: requestLog, error: err }, 'Failed to modify request body.');
-      body = req.body;
-    }
-  }
-  return { headers, body };
+  return { context, isStreamingRequest: !!context.body.stream, parsedBody };
 }
 
 export function startServer(config: AppConfig): Server {
@@ -377,16 +528,14 @@ export function startServer(config: AppConfig): Server {
   logger.info(`📋 Health check: http://localhost:${PORT}/health`);
   logger.info('\n📝 Configured routes:');
   config.routes.forEach(route => {
-    const targets = route.upstreams.map(up =>
-      `${up.target} (w: ${up.weight}, p: ${up.priority || 1})`
-    ).join(', ');
+    const targets = route.upstreams.map(up => `${up.target} (w: ${up.weight}, p: ${up.priority || 1})`).join(', ');
     logger.info(`  ${route.path} -> [${targets}]`);
   });
   logger.info('\n');
 
   const server = Bun.serve({
     port: PORT,
-    reusePort: true, // 允许多个进程共享同一端口
+    reusePort: true,
     fetch: (req) => handleRequest(req, config),
     error(error: Error) {
       logger.fatal({ error }, 'A top-level server error occurred');

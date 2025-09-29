@@ -5,12 +5,14 @@
   "main": "src/index.ts",
   "scripts": {
     "start": "bun run src/master.ts",
-    "dev": "bun --watch run src/master.ts",
+    "dev": "LOG_LEVEL=debug bun --watch run src/master.ts",
     "test": "bun test",
     "prepare": "husky"
   },
   "dependencies": {
+    "@types/lodash-es": "^4.17.12",
     "dotenv": "^17.2.2",
+    "lodash-es": "^4.17.21",
     "pino": "^9.1.0"
   },
   "devDependencies": {
@@ -23,7 +25,7 @@
     "@types/node": "^24.5.2",
     "commitlint": "^20.0.0",
     "husky": "^9.1.7",
-    "pino-pretty": "^11.2.1",
+    "pino-pretty": "^13.1.1",
     "pino-roll": "^3.1.0",
     "semantic-release": "^24.2.9"
   },

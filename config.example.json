@@ -2,6 +2,23 @@
   "bodyParserLimit": "50mb",
   "routes": [
     {
+      "path": "/api/ai",
+      "transformer": "anthropic-to-openai",
+      "upstreams": [
+        {
+          "target": "https://api.openai.com",
+          "priority": 1,
+          "weight": 100
+        },
+        {
+          "target": "https://api.gemini.com",
+          "priority": 2,
+          "weight": 100,
+          "transformer": "anthropic-to-gemini"
+        }
+      ]
+    },
+    {
       "path": "/api/simple",
       "upstreams": [
         {
