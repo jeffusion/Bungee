@@ -1,31 +1,28 @@
 {
   "name": "bungee",
-  "version": "1.0.0",
+  "version": "1.0.8",
+  "private": true,
   "description": "A high-performance reverse proxy server built with Bun and TypeScript, featuring hot configuration reloading and multi-process architecture.",
-  "main": "dist/master.js",
-  "bin": {
-    "bungee": "./bin/bungee"
-  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "start": "bun run src/master.ts",
-    "dev": "LOG_LEVEL=debug bun --watch run src/master.ts",
+    "start": "bun packages/core/src/master.ts",
+    "dev": "LOG_LEVEL=debug bun --watch packages/core/src/master.ts",
     "test": "bun test",
     "prepare": "husky",
-    "build": "npm run build:clean && npm run build:compile && npm run build:binaries",
-    "build:clean": "rm -rf dist bin/bungee-*",
-    "build:compile": "bun build src/cli/index.ts --outdir dist --target bun && bun build src/master.ts --outdir dist --target bun",
-    "build:binaries": "npm run build:linux && npm run build:macos && npm run build:macos-arm",
-    "build:linux": "bun build --compile --target=bun-linux-x64 src/cli/index.ts --outfile bin/bungee-linux",
-    "build:macos": "bun build --compile --target=bun-darwin-x64 src/cli/index.ts --outfile bin/bungee-macos",
-    "build:macos-arm": "bun build --compile --target=bun-darwin-arm64 src/cli/index.ts --outfile bin/bungee-macos-arm64",
-    "prepublishOnly": "npm run build"
-  },
-  "dependencies": {
-    "@types/lodash-es": "^4.17.12",
-    "commander": "^14.0.1",
-    "dotenv": "^17.2.2",
-    "lodash-es": "^4.17.21",
-    "pino": "^9.1.0"
+    "build": "bun run build:ui && bun run bundle:ui && bun run build:core && bun run build:cli",
+    "build:full": "bun run build && bun run build:binaries",
+    "build:clean": "rm -rf packages/*/dist bin/bungee-* packages/core/src/ui/assets.ts",
+    "build:ui": "cd packages/ui && bun run build",
+    "build:core": "cd packages/core && bun run build",
+    "build:cli": "cd packages/cli && bun run build",
+    "build:binaries": "bun scripts/build-binaries.ts",
+    "bundle:ui": "bun scripts/bundle-ui.ts",
+    "version:sync": "bun scripts/sync-versions.ts",
+    "publish:dry": "bun scripts/publish.ts --dry-run",
+    "publish": "bun scripts/publish.ts",
+    "release:binaries": "bun scripts/upload-binaries.ts"
   },
   "devDependencies": {
     "@commitlint/config-conventional": "^20.0.0",
@@ -37,29 +34,19 @@
     "@types/node": "^24.5.2",
     "commitlint": "^20.0.0",
     "husky": "^9.1.7",
-    "pino-pretty": "^13.1.1",
-    "pino-roll": "^3.1.0",
     "semantic-release": "^24.2.9"
   },
   "keywords": [
     "reverse-proxy",
     "bun",
     "typescript",
-    "cli",
-    "daemon",
-    "proxy-server"
+    "monorepo",
+    "workspace"
   ],
   "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "preferGlobal": true,
-  "files": [
-    "bin/",
-    "dist/",
-    "config.example.json",
-    "README.md",
-    "LICENSE"
-  ]
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
+  }
 }

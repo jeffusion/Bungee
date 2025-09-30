@@ -2,9 +2,16 @@
 .bunx/
 node_modules/
 dist/
+packages/*/dist/
+packages/ui/dist/
+*.bun-build
+.*.bun-build
+
+# Auto-generated assets
+packages/core/src/ui/assets.ts
 
 # Compiled binaries (keep the platform detection script bin/bungee)
-bin/bungee-*
+bin/
 
 # Logs
 logs

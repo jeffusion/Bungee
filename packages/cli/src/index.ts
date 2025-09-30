@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { program } from 'commander';
 import { initCommand } from './commands/init';
 import { startCommand } from './commands/start';
@@ -6,11 +6,13 @@ import { stopCommand } from './commands/stop';
 import { statusCommand } from './commands/status';
 import { restartCommand } from './commands/restart';
 import { logsCommand } from './commands/logs';
+import { uiCommand } from './commands/ui';
+import pkg from '../package.json';
 
 program
   .name('bungee')
   .description('High-performance reverse proxy server built with Bun and TypeScript')
-  .version('1.0.0');
+  .version(pkg.version);
 
 program
   .command('init [path]')
@@ -49,5 +51,12 @@ program
   .option('-f, --follow', 'Follow log output')
   .option('-n, --lines <number>', 'Number of lines to show', '50')
   .action(logsCommand);
+
+program
+  .command('ui')
+  .description('Open web dashboard (proxy server must be running)')
+  .option('-p, --port <port>', 'Proxy server port', '8088')
+  .option('-H, --host <host>', 'Proxy server host', 'localhost')
+  .action(uiCommand);
 
 program.parse();

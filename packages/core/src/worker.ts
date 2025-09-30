@@ -6,6 +6,7 @@ import { processDynamicValue, type ExpressionContext } from './expression-engine
 import { transformers } from './transformers';
 import { createSseTransformerStream } from './streaming';
 import { mergeWith, isArray } from 'lodash-es';
+import { handleUIRequest } from './ui/server';
 
 
 // --- Runtime State Management ---
@@ -99,6 +100,12 @@ export async function handleRequest(
   upstreamSelector: (upstreams: RuntimeUpstream[]) => RuntimeUpstream | undefined = selectUpstream
 ): Promise<Response> {
   const url = new URL(req.url);
+
+  // 优先处理 UI 请求
+  const uiResponse = handleUIRequest(req);
+  if (uiResponse) {
+    return uiResponse;
+  }
 
   if (url.pathname === '/health') {
     return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }), {
@@ -548,6 +555,15 @@ export function startServer(config: AppConfig): Server {
 export function shutdownServer(server: Server) {
   logger.info('Shutting down server...');
   server.stop(true);
+
+  // Terminate the health checker worker to prevent resource leaks
+  try {
+    healthChecker.terminate();
+    logger.info('Health checker worker terminated.');
+  } catch (error) {
+    logger.error({ error }, 'Failed to terminate health checker worker');
+  }
+
   logger.info('Server has been shut down.');
   process.exit(0);
 }

@@ -1,12 +1,8 @@
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import { ConfigPaths } from '../config/paths';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { BinaryManager } from '../binary/manager';
 
 export class DaemonManager {
   private configDir: string;
@@ -66,15 +62,12 @@ export class DaemonManager {
       throw new Error(`Configuration file not found: ${resolvedConfigPath}`);
     }
 
-    // 查找master脚本
-    const masterScript = path.resolve(__dirname, '../../master.js');
-    if (!fs.existsSync(masterScript)) {
-      throw new Error(`Master script not found: ${masterScript}`);
-    }
+    // 确保二进制文件存在（如果不存在会自动下载）
+    const binaryPath = await BinaryManager.ensureBinary();
 
-    // 准备日志文件
-    const logStream = fs.createWriteStream(this.logFile, { flags: 'a' });
-    const errorLogStream = fs.createWriteStream(this.errorLogFile, { flags: 'a' });
+    // 打开日志文件（使用文件描述符，因为 detached 进程不能使用流）
+    const logFd = fs.openSync(this.logFile, 'a');
+    const errorLogFd = fs.openSync(this.errorLogFile, 'a');
 
     // 设置环境变量
     const env = {
@@ -84,13 +77,17 @@ export class DaemonManager {
       ...(options.port && { PORT: options.port }),
     };
 
-    // 启动守护进程
-    const child = spawn(process.execPath, [masterScript], {
+    // 启动守护进程 - 直接运行二进制文件
+    const child = spawn(binaryPath, [], {
       detached: true,
-      stdio: ['ignore', logStream, errorLogStream],
+      stdio: ['ignore', logFd, errorLogFd],
       env,
       cwd: process.cwd(),
     });
+
+    // 关闭父进程中的文件描述符（子进程会继承）
+    fs.closeSync(logFd);
+    fs.closeSync(errorLogFd);
 
     // 让子进程独立运行
     child.unref();

@@ -9,11 +9,14 @@ dotenv.config();
 
 const CONFIG_PATH = path.resolve(process.cwd(), 'config.json');
 const WORKER_COUNT = process.env.WORKER_COUNT ? parseInt(process.env.WORKER_COUNT) : 2;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8088;
 
 interface WorkerInfo {
     process: ChildProcess;
     workerId: number;
     status: 'starting' | 'ready' | 'shutting_down' | 'stopped';
+    exitPromise?: Promise<void>;
+    exitResolve?: () => void;
 }
 
 class Master {
@@ -64,16 +67,23 @@ class Master {
                 env: {
                     ...process.env,
                     WORKER_ID: String(workerId),
-                    PORT: String(8088) // 所有worker共享同一个端口
+                    PORT: String(PORT) // 所有worker共享同一个端口
                 },
             });
 
             logger.info(`Forking worker #${workerId} with PID ${worker.pid}`);
 
+            let exitResolve: (() => void) | undefined;
+            const exitPromise = new Promise<void>((res) => {
+                exitResolve = res;
+            });
+
             const workerInfo: WorkerInfo = {
                 process: worker,
                 workerId,
-                status: 'starting'
+                status: 'starting',
+                exitPromise,
+                exitResolve
             };
 
             this.workers.set(workerId, workerInfo);
@@ -89,6 +99,8 @@ class Master {
             worker.on('exit', (code, signal) => {
                 clearTimeout(startupTimeout);
 
+                const wasStarting = workerInfo.status === 'starting';
+
                 if (workerInfo.status === 'shutting_down') {
                     logger.info(`Worker #${workerId} (PID: ${worker.pid}) exited gracefully (code: ${code}, signal: ${signal}).`);
                 } else {
@@ -96,7 +108,14 @@ class Master {
                 }
 
                 this.workers.delete(workerId);
-                if (workerInfo.status === 'starting') {
+                workerInfo.status = 'stopped';
+
+                // Resolve the exit promise
+                if (exitResolve) {
+                    exitResolve();
+                }
+
+                if (wasStarting) {
                     resolve(false);
                 }
             });
@@ -203,30 +222,27 @@ class Master {
     }
 
     private async gracefulShutdownWorker(workerInfo: WorkerInfo): Promise<void> {
-        return new Promise((resolve) => {
-            if (workerInfo.status === 'stopped') {
-                resolve();
-                return;
-            }
+        if (workerInfo.status === 'stopped') {
+            return;
+        }
 
-            workerInfo.status = 'shutting_down';
+        workerInfo.status = 'shutting_down';
 
-            // Send shutdown command
-            workerInfo.process.send({ command: 'shutdown' });
+        // Send shutdown command
+        workerInfo.process.send({ command: 'shutdown' });
 
-            // Set timeout for graceful shutdown
-            const shutdownTimeout = setTimeout(() => {
-                logger.warn(`Worker #${workerInfo.workerId} did not shut down gracefully. Force killing.`);
-                workerInfo.process.kill('SIGKILL');
-                resolve();
-            }, 30000); // 30 second timeout
+        // Set timeout for graceful shutdown
+        const shutdownTimeout = setTimeout(() => {
+            logger.warn(`Worker #${workerInfo.workerId} did not shut down gracefully. Force killing.`);
+            workerInfo.process.kill('SIGKILL');
+        }, 30000); // 30 second timeout
 
-            workerInfo.process.on('exit', () => {
-                clearTimeout(shutdownTimeout);
-                workerInfo.status = 'stopped';
-                resolve();
-            });
-        });
+        // Wait for the exit event using the existing exitPromise
+        if (workerInfo.exitPromise) {
+            await workerInfo.exitPromise;
+        }
+
+        clearTimeout(shutdownTimeout);
     }
 
     private handleSignals() {

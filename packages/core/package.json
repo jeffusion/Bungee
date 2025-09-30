@@ -1,0 +1,37 @@
+{
+  "name": "@jeffusion/bungee-core",
+  "version": "1.0.8",
+  "description": "Bungee reverse proxy core engine",
+  "main": "dist/master.js",
+  "scripts": {
+    "dev": "LOG_LEVEL=debug bun --watch src/master.ts",
+    "build": "bun build src/master.ts src/worker.ts --outdir dist --target bun",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@jeffusion/bungee-shared": "workspace:*",
+    "pino": "^9.1.0",
+    "lodash-es": "^4.17.21",
+    "dotenv": "^17.2.2",
+    "@types/lodash-es": "^4.17.12"
+  },
+  "devDependencies": {
+    "pino-pretty": "^13.1.1",
+    "pino-roll": "^3.1.0"
+  },
+  "exports": {
+    ".": "./dist/master.js",
+    "./master": "./dist/master.js",
+    "./worker": "./dist/worker.js"
+  },
+  "keywords": [
+    "reverse-proxy",
+    "proxy-server",
+    "bun"
+  ],
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "license": "MIT"
+}
