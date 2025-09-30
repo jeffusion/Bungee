@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * 手动发布所有包到 npm
- * 用法: bun scripts/publish.ts [--dry-run]
+ * 用法: bun scripts/publish.ts [--dry-run] [--ci]
  */
 
 import { $ } from 'bun';
@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 const dryRun = process.argv.includes('--dry-run');
+const ciMode = process.argv.includes('--ci');
 
 const packages = [
   { name: '@jeffusion/bungee-shared', path: 'packages/shared' },
@@ -41,8 +42,32 @@ function replaceWorkspaceDeps(pkgJson: any, version: string): any {
 
 async function publish() {
   console.log(`\n${'='.repeat(60)}`);
-  console.log(dryRun ? '🧪 DRY RUN MODE' : '📦 PUBLISHING TO NPM');
+  if (dryRun) {
+    console.log('🧪 DRY RUN MODE');
+  } else if (ciMode) {
+    console.log('🤖 CI MODE - AUTOMATED PUBLISHING');
+  } else {
+    console.log('📦 PUBLISHING TO NPM');
+  }
   console.log(`${'='.repeat(60)}\n`);
+
+  // 在 CI 模式下配置 npm token
+  if (ciMode && !dryRun) {
+    const npmToken = process.env.NPM_TOKEN;
+    if (!npmToken) {
+      console.error('❌ NPM_TOKEN environment variable is required in CI mode');
+      process.exit(1);
+    }
+
+    console.log('🔐 Configuring npm authentication...\n');
+    try {
+      await $`npm config set //registry.npmjs.org/:_authToken ${npmToken}`;
+      console.log('✓ npm authentication configured\n');
+    } catch (error) {
+      console.error('❌ Failed to configure npm authentication:', error);
+      process.exit(1);
+    }
+  }
 
   // 1. 确保已完整构建（包括二进制文件）
   console.log('📦 Building all packages and binaries...\n');

@@ -4,17 +4,20 @@
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
     "@semantic-release/changelog",
-    ["@semantic-release/npm", {
-      "npmPublish": true,
-      "pkgRoot": "packages/cli"
-    }],
-    ["@semantic-release/git", {
-      "assets": ["package.json", "packages/*/package.json", "CHANGELOG.md"],
-      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
-    }],
-    "@semantic-release/github",
-    ["@semantic-release/exec", {
-      "prepareCmd": "bun scripts/sync-versions.ts ${nextRelease.version}"
-    }]
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "bun scripts/sync-versions.ts ${nextRelease.version}",
+        "publishCmd": "bun scripts/publish.ts --ci"
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["package.json", "packages/*/package.json", "CHANGELOG.md"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
+    "@semantic-release/github"
   ]
 }
