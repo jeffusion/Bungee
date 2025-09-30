@@ -3,7 +3,7 @@
     "rootDir": "./src",
     "target": "esnext",
     "module": "esnext",
-    "lib": ["esnext"],
+    "lib": ["esnext", "dom"],
     "moduleResolution": "bundler",
     "esModuleInterop": true,
     "strict": true,

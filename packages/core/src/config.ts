@@ -2,9 +2,10 @@ import { logger } from './logger';
 import type { AppConfig } from '@jeffusion/bungee-shared';
 
 // --- Configuration Loading ---
-async function loadConfig(): Promise<AppConfig> {
+async function loadConfig(configPath?: string): Promise<AppConfig> {
   try {
-    const config: AppConfig = await Bun.file('config.json').json();
+    const path = configPath || process.env.CONFIG_PATH || 'config.json';
+    const config: AppConfig = await Bun.file(path).json();
 
     // Validate config
     if (!config.routes || !Array.isArray(config.routes)) {

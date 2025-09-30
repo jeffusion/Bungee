@@ -1,6 +1,6 @@
 {
   "name": "@jeffusion/bungee-ui",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "description": "Bungee Web UI Dashboard",
   "type": "module",

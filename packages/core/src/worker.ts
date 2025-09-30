@@ -1,12 +1,23 @@
 import { logger } from './logger';
-import type { AppConfig, Upstream, RouteConfig, ModificationRules, TransformerConfig, ResponseRuleSet } from './config';
+import type { AppConfig, Upstream, RouteConfig, ModificationRules, TransformerConfig, ResponseRuleSet } from '@jeffusion/bungee-shared';
 import type { Server } from 'bun';
 import { loadConfig } from './config';
 import { processDynamicValue, type ExpressionContext } from './expression-engine';
 import { transformers } from './transformers';
 import { createSseTransformerStream } from './streaming';
-import { mergeWith, isArray } from 'lodash-es';
+import {
+  mergeWith,
+  isArray,
+  forEach,
+  map,
+  filter,
+  sumBy,
+  sortBy,
+  find,
+  isEmpty
+} from 'lodash-es';
 import { handleUIRequest } from './ui/server';
+import { parentPort, workerData } from 'worker_threads';
 
 
 // --- Runtime State Management ---
@@ -19,17 +30,17 @@ export const runtimeState = new Map<string, { upstreams: RuntimeUpstream[] }>();
 
 export function initializeRuntimeState(config: AppConfig) {
   runtimeState.clear();
-  for (const route of config.routes) {
+  forEach(config.routes, (route) => {
     if (route.failover?.enabled && route.upstreams && route.upstreams.length > 0) {
       runtimeState.set(route.path, {
-        upstreams: route.upstreams.map(up => ({
+        upstreams: map(route.upstreams, (up) => ({
           ...up,
-          status: 'HEALTHY',
+          status: 'HEALTHY' as const,
           lastFailure: 0,
         })),
       });
     }
-  }
+  });
   logger.info('Runtime state initialized.');
 }
 
@@ -40,7 +51,7 @@ healthChecker.onmessage = (event: MessageEvent<{ status: string; target: string 
   const { status, target } = event.data;
   if (status === 'recovered') {
     for (const routeState of runtimeState.values()) {
-      const upstream = routeState.upstreams.find(up => up.target === target);
+      const upstream = find(routeState.upstreams, (up) => up.target === target);
       if (upstream && upstream.status === 'UNHEALTHY') {
         upstream.status = 'HEALTHY';
         logger.warn({ target }, 'Upstream has recovered and is back in service.');
@@ -50,7 +61,7 @@ healthChecker.onmessage = (event: MessageEvent<{ status: string; target: string 
   }
 };
 
-const PORT = process.env.PORT || 8088;
+const PORT = workerData?.port || process.env.PORT || 8088;
 
 function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefined {
   if (upstreams.length === 0) return undefined;
@@ -58,7 +69,7 @@ function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefin
   // 按优先级分组 (priority 值越小优先级越高)
   const priorityGroups = new Map<number, RuntimeUpstream[]>();
 
-  upstreams.forEach(upstream => {
+  forEach(upstreams, (upstream) => {
     const priority = upstream.priority || 1;
     if (!priorityGroups.has(priority)) {
       priorityGroups.set(priority, []);
@@ -67,14 +78,14 @@ function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefin
   });
 
   // 获取排序后的优先级列表（从高到低）
-  const sortedPriorities = Array.from(priorityGroups.keys()).sort((a, b) => a - b);
+  const sortedPriorities = sortBy(Array.from(priorityGroups.keys()));
 
   // 依次尝试每个优先级组，选择第一个有可用 upstream 的组
   for (const priority of sortedPriorities) {
     const priorityUpstreams = priorityGroups.get(priority)!;
 
     // 在同一优先级组内使用加权随机选择
-    const totalWeight = priorityUpstreams.reduce((sum, up) => sum + (up.weight ?? 100), 0);
+    const totalWeight = sumBy(priorityUpstreams, (up) => up.weight ?? 100);
     if (totalWeight === 0) continue;
 
     let random = Math.random() * totalWeight;
@@ -122,7 +133,7 @@ export async function handleRequest(
 
   logger.info({ request: requestLog }, `\n=== Incoming Request ===`);
 
-  const route = config.routes.find(r => url.pathname.startsWith(r.path));
+  const route = find(config.routes, (r) => url.pathname.startsWith(r.path));
 
   if (!route) {
     logger.error({ request: requestLog }, `No route found for path: ${url.pathname}`);
@@ -130,7 +141,11 @@ export async function handleRequest(
   }
   const routeState = runtimeState.get(route.path);
   if (!routeState) {
-    const staticUpstreams = route.upstreams.map(up => ({ ...up, status: 'HEALTHY', lastFailure: 0 } as RuntimeUpstream));
+    const staticUpstreams = map(route.upstreams, (up) => ({
+      ...up,
+      status: 'HEALTHY' as const,
+      lastFailure: 0
+    } as RuntimeUpstream));
     const selectedUpstream = upstreamSelector(staticUpstreams);
     if (!selectedUpstream) {
       logger.error({ request: requestLog }, 'No valid upstream found for route.');
@@ -139,7 +154,7 @@ export async function handleRequest(
     return await proxyRequest(req, route, selectedUpstream, requestLog);
   }
 
-  const healthyUpstreams = routeState.upstreams.filter(up => up.status === 'HEALTHY');
+  const healthyUpstreams = filter(routeState.upstreams, (up) => up.status === 'HEALTHY');
   if (healthyUpstreams.length === 0) {
     logger.error({ request: requestLog }, 'No healthy upstreams available for this route.');
     return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
@@ -150,7 +165,10 @@ export async function handleRequest(
     logger.error({ request: requestLog }, 'Upstream selection failed.');
     return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
   }
-  const retryQueue = healthyUpstreams.filter(up => up.target !== firstTryUpstream.target).sort((a,b) => (a.priority || 1) - (b.priority || 1) || (b.weight || 100) - (a.weight || 100));
+  const retryQueue = sortBy(
+    filter(healthyUpstreams, (up) => up.target !== firstTryUpstream.target),
+    [(up) => up.priority || 1, (up) => -(up.weight || 100)]
+  );
   const attemptQueue = [firstTryUpstream, ...retryQueue];
 
   for (const upstream of attemptQueue) {
@@ -188,21 +206,19 @@ function removeEmptyFields(obj: any): any {
     if (obj === null || obj === undefined) {
         return undefined;
     }
-    if (Array.isArray(obj)) {
-        return obj.map(removeEmptyFields).filter(v => v !== undefined);
+    if (isArray(obj)) {
+        return filter(map(obj, removeEmptyFields), (v) => v !== undefined);
     }
     if (typeof obj === 'object') {
         const newObj: { [key: string]: any } = {};
-        for (const key in obj) {
-            if (Object.prototype.hasOwnProperty.call(obj, key)) {
-                const value = removeEmptyFields(obj[key]);
-                if (value !== undefined && value !== null && value !== '') {
-                    newObj[key] = value;
-                }
+        forEach(obj, (value, key) => {
+            const cleanedValue = removeEmptyFields(value);
+            if (cleanedValue !== undefined && cleanedValue !== null && cleanedValue !== '') {
+                newObj[key] = cleanedValue;
             }
-        }
+        });
         // If the object becomes empty after cleaning, return undefined so it can be removed by its parent.
-        return Object.keys(newObj).length > 0 ? newObj : undefined;
+        return !isEmpty(newObj) ? newObj : undefined;
     }
     return obj;
 }
@@ -228,24 +244,24 @@ export async function applyBodyRules(
     };
 
     if (rules.add) {
-      for (const [key, value] of Object.entries(rules.add)) {
+      forEach(rules.add, (value, key) => {
         processAndSet(key, value, 'add');
-      }
+      });
     }
     if (rules.replace) {
-      for (const [key, value] of Object.entries(rules.replace)) {
+      forEach(rules.replace, (value, key) => {
         if (key in modifiedBody || (rules.add && key in rules.add)) {
           processAndSet(key, value, 'replace');
         }
-      }
+      });
     }
     if (rules.default) {
-        for (const [key, value] of Object.entries(rules.default)) {
-          if (modifiedBody[key] === undefined) {
-            processAndSet(key, value, 'default');
-          }
+      forEach(rules.default, (value, key) => {
+        if (modifiedBody[key] === undefined) {
+          processAndSet(key, value, 'default');
         }
-      }
+      });
+    }
     if (rules.remove) {
       for (const key of rules.remove) {
         const wasAdded = rules.add && key in rules.add;
@@ -370,20 +386,28 @@ async function proxyRequest(req: Request, route: RouteConfig, upstream: Upstream
   headers.delete('host');
 
   if (finalRequestRules.headers) {
-    if (finalRequestRules.headers.remove) for (const key of finalRequestRules.headers.remove) headers.delete(key);
+    if (finalRequestRules.headers.remove) {
+      forEach(finalRequestRules.headers.remove, (key) => headers.delete(key));
+    }
     if (finalRequestRules.headers.replace) {
-        for (const [key, value] of Object.entries(finalRequestRules.headers.replace)) {
-            if (headers.has(key)) {
-                try { headers.set(key, String(processDynamicValue(value, finalContext))); }
-                catch (e) { logger.error({request: requestLog, error: (e as Error).message}, "Header replace expression failed") }
-            }
+      forEach(finalRequestRules.headers.replace, (value, key) => {
+        if (headers.has(key)) {
+          try {
+            headers.set(key, String(processDynamicValue(value, finalContext)));
+          } catch (e) {
+            logger.error({request: requestLog, error: (e as Error).message}, "Header replace expression failed");
+          }
         }
+      });
     }
     if (finalRequestRules.headers.add) {
-        for (const [key, value] of Object.entries(finalRequestRules.headers.add)) {
-            try { headers.set(key, String(processDynamicValue(value, finalContext))); }
-            catch (e) { logger.error({request: requestLog, error: (e as Error).message}, "Header add expression failed") }
+      forEach(finalRequestRules.headers.add, (value, key) => {
+        try {
+          headers.set(key, String(processDynamicValue(value, finalContext)));
+        } catch (e) {
+          logger.error({request: requestLog, error: (e as Error).message}, "Header add expression failed");
         }
+      });
     }
   }
 
@@ -393,7 +417,7 @@ async function proxyRequest(req: Request, route: RouteConfig, upstream: Upstream
   if (req.body && contentType.includes('application/json')) {
     body = JSON.stringify(finalBody);
     // Avoid setting Content-Length for empty bodies
-    if (Object.keys(finalBody).length > 0) {
+    if (!isEmpty(finalBody)) {
       headers.set('Content-Length', String(Buffer.byteLength(body as string)));
     } else {
         headers.delete('Content-Length');
@@ -518,8 +542,13 @@ async function buildRequestContext(req: Request, rewrittenPath: { pathname: stri
     }
   }
 
+  const headersObject: { [key: string]: string } = {};
+  req.headers.forEach((value, key) => {
+    headersObject[key] = value;
+  });
+
   const context: ExpressionContext = {
-    headers: Object.fromEntries(req.headers.entries()),
+    headers: headersObject,
     body: parsedBody,
     url: { pathname: rewrittenPath.pathname, search: rewrittenPath.search, host: url.hostname, protocol: url.protocol },
     method: req.method,
@@ -534,8 +563,8 @@ export function startServer(config: AppConfig): Server {
   logger.info(`🚀 Reverse proxy server starting on port ${PORT}`);
   logger.info(`📋 Health check: http://localhost:${PORT}/health`);
   logger.info('\n📝 Configured routes:');
-  config.routes.forEach(route => {
-    const targets = route.upstreams.map(up => `${up.target} (w: ${up.weight}, p: ${up.priority || 1})`).join(', ');
+  forEach(config.routes, (route) => {
+    const targets = map(route.upstreams, (up) => `${up.target} (w: ${up.weight}, p: ${up.priority || 1})`).join(', ');
     logger.info(`  ${route.path} -> [${targets}]`);
   });
   logger.info('\n');
@@ -571,23 +600,38 @@ export function shutdownServer(server: Server) {
 // --- Worker (Slave) Logic ---
 async function startWorker() {
   try {
-    const config = await loadConfig();
-    const workerId = process.env.WORKER_ID || '0';
+    // Get worker configuration from workerData (Worker Threads) or environment variables (fallback)
+    const workerId = workerData?.workerId ?? (process.env.WORKER_ID ? parseInt(process.env.WORKER_ID) : 0);
+    const configPath = workerData?.configPath || process.env.CONFIG_PATH;
 
     logger.info(`Worker #${workerId} starting with PID ${process.pid}`);
 
+    const config = configPath ? await loadConfig(configPath) : await loadConfig();
     const server = startServer(config);
 
-    if (process.send) {
+    // Notify master that worker is ready
+    if (parentPort) {
+      parentPort.postMessage({ status: 'ready', pid: process.pid });
+    } else if (process.send) {
       process.send({ status: 'ready', pid: process.pid });
     }
 
-    process.on('message', (message: any) => {
-      if (message && typeof message === 'object' && message.command === 'shutdown') {
-        logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
-        shutdownServer(server);
-      }
-    });
+    // Listen for shutdown commands from master
+    if (parentPort) {
+      parentPort.on('message', (message: any) => {
+        if (message && typeof message === 'object' && message.command === 'shutdown') {
+          logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
+          shutdownServer(server);
+        }
+      });
+    } else {
+      process.on('message', (message: any) => {
+        if (message && typeof message === 'object' && message.command === 'shutdown') {
+          logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
+          shutdownServer(server);
+        }
+      });
+    }
 
     const handleSignal = (signal: NodeJS.Signals) => {
       logger.info(`Worker #${workerId} received ${signal}. Initiating graceful shutdown...`);
@@ -599,13 +643,16 @@ async function startWorker() {
 
   } catch (error) {
     logger.error({ error }, 'Worker failed to start');
-    if (process.send) {
+    if (parentPort) {
+      parentPort.postMessage({ status: 'error', error: (error instanceof Error ? error.message : String(error)) });
+    } else if (process.send) {
       process.send({ status: 'error', error: (error instanceof Error ? error.message : String(error)) });
     }
     process.exit(1);
   }
 }
 
-if (import.meta.main) {
+// Start worker in Worker Thread mode or standalone mode
+if (parentPort || import.meta.main) {
   startWorker();
 }

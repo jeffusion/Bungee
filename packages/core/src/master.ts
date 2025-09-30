@@ -1,5 +1,5 @@
 import path from 'path';
-import { fork, type ChildProcess } from 'child_process';
+import { Worker } from 'worker_threads';
 import fs from 'fs';
 import { logger } from './logger';
 import dotenv from 'dotenv';
@@ -12,7 +12,7 @@ const WORKER_COUNT = process.env.WORKER_COUNT ? parseInt(process.env.WORKER_COUN
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8088;
 
 interface WorkerInfo {
-    process: ChildProcess;
+    worker: Worker;
     workerId: number;
     status: 'starting' | 'ready' | 'shutting_down' | 'stopped';
     exitPromise?: Promise<void>;
@@ -63,15 +63,15 @@ class Master {
 
     private forkWorker(workerId: number): Promise<boolean> {
         return new Promise((resolve) => {
-            const worker = fork(path.resolve(__dirname, 'worker.ts'), [], {
-                env: {
-                    ...process.env,
-                    WORKER_ID: String(workerId),
-                    PORT: String(PORT) // 所有worker共享同一个端口
-                },
+            const worker = new Worker(new URL('./worker.ts', import.meta.url).href, {
+                workerData: {
+                    workerId,
+                    port: PORT,
+                    configPath: CONFIG_PATH
+                }
             });
 
-            logger.info(`Forking worker #${workerId} with PID ${worker.pid}`);
+            logger.info(`Starting worker #${workerId} with thread ID ${worker.threadId}`);
 
             let exitResolve: (() => void) | undefined;
             const exitPromise = new Promise<void>((res) => {
@@ -79,7 +79,7 @@ class Master {
             });
 
             const workerInfo: WorkerInfo = {
-                process: worker,
+                worker,
                 workerId,
                 status: 'starting',
                 exitPromise,
@@ -90,21 +90,21 @@ class Master {
 
             // Set a timeout for worker startup
             const startupTimeout = setTimeout(() => {
-                logger.error(`Worker #${workerId} (PID: ${worker.pid}) failed to start within timeout`);
-                worker.kill();
+                logger.error(`Worker #${workerId} (Thread ID: ${worker.threadId}) failed to start within timeout`);
+                worker.terminate();
                 this.workers.delete(workerId);
                 resolve(false);
             }, 30000); // 30 second timeout
 
-            worker.on('exit', (code, signal) => {
+            worker.on('exit', (code) => {
                 clearTimeout(startupTimeout);
 
                 const wasStarting = workerInfo.status === 'starting';
 
                 if (workerInfo.status === 'shutting_down') {
-                    logger.info(`Worker #${workerId} (PID: ${worker.pid}) exited gracefully (code: ${code}, signal: ${signal}).`);
+                    logger.info(`Worker #${workerId} (Thread ID: ${worker.threadId}) exited gracefully (code: ${code}).`);
                 } else {
-                    logger.warn(`Worker #${workerId} (PID: ${worker.pid}) exited unexpectedly with code ${code} and signal ${signal}.`);
+                    logger.warn(`Worker #${workerId} (Thread ID: ${worker.threadId}) exited unexpectedly with code ${code}.`);
                 }
 
                 this.workers.delete(workerId);
@@ -123,16 +123,24 @@ class Master {
             worker.on('message', (message: any) => {
                 clearTimeout(startupTimeout);
                 if (message.status === 'ready') {
-                    logger.info(`Worker #${workerId} (PID: ${worker.pid}) reported ready.`);
+                    logger.info(`Worker #${workerId} (Thread ID: ${worker.threadId}) reported ready.`);
                     workerInfo.status = 'ready';
                     resolve(true);
                 } else if (message.status === 'error') {
                     const errorMsg = message.error || 'Unknown error';
-                    logger.error(`Worker #${workerId} (PID: ${worker.pid}) reported an error: ${errorMsg}`);
-                    worker.kill();
+                    logger.error(`Worker #${workerId} (Thread ID: ${worker.threadId}) reported an error: ${errorMsg}`);
+                    worker.terminate();
                     this.workers.delete(workerId);
                     resolve(false);
                 }
+            });
+
+            worker.on('error', (error) => {
+                clearTimeout(startupTimeout);
+                logger.error({ error }, `Worker #${workerId} encountered an error`);
+                worker.terminate();
+                this.workers.delete(workerId);
+                resolve(false);
             });
         });
     }
@@ -229,12 +237,12 @@ class Master {
         workerInfo.status = 'shutting_down';
 
         // Send shutdown command
-        workerInfo.process.send({ command: 'shutdown' });
+        workerInfo.worker.postMessage({ command: 'shutdown' });
 
         // Set timeout for graceful shutdown
         const shutdownTimeout = setTimeout(() => {
-            logger.warn(`Worker #${workerInfo.workerId} did not shut down gracefully. Force killing.`);
-            workerInfo.process.kill('SIGKILL');
+            logger.warn(`Worker #${workerInfo.workerId} did not shut down gracefully. Force terminating.`);
+            workerInfo.worker.terminate();
         }, 30000); // 30 second timeout
 
         // Wait for the exit event using the existing exitPromise
