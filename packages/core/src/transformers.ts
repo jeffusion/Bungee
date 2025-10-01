@@ -1,4 +1,4 @@
-import type { TransformerConfig } from './config';
+import type { TransformerConfig } from '@jeffusion/bungee-shared';
 
 export const transformers: Record<string, TransformerConfig[]> = {
   'anthropic-to-openai': [
@@ -75,6 +75,7 @@ export const transformers: Record<string, TransformerConfig[]> = {
               topP: '{{body.top_p || 1}}',
               topK: '{{body.top_k}}',
               stopSequences: '{{body.stop_sequences}}',
+              thinkingConfig: '{{ body.thinking && body.thinking.type === "enabled" ? { includeThoughts: true, thinkingBudget: body.thinking.budget_tokens || -1 } : undefined }}',
             },
             tools: '{{ body.tools ? [{ functionDeclarations: body.tools.map(t => ({ name: t.name, description: t.description, parameters: deepClean(t.input_schema, ["$schema", "additionalProperties", "title"]) })) }] : undefined }}',
             toolConfig: '{{ body.tool_choice ? { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [body.tool_choice.name] } } : (body.tools ? { functionCallingConfig: { mode: "AUTO" } } : undefined) }}',
@@ -92,6 +93,8 @@ export const transformers: Record<string, TransformerConfig[]> = {
             'top_k',
             'metadata',
             'tool_choice',
+            'thinking',
+            'tools',
           ],
         },
       },
@@ -106,7 +109,7 @@ export const transformers: Record<string, TransformerConfig[]> = {
                   type: 'message',
                   role: 'assistant',
                   model: '{{ body.modelVersion || (body.candidates && body.candidates[0] && body.candidates[0].model) }}', // Fallback for different Gemini versions
-                  content: '{{ (body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts) ? body.candidates[0].content.parts.map(p => p.functionCall ? ({ type: "tool_use", id: p.functionCall.name, name: p.functionCall.name, input: p.functionCall.args }) : ({ type: "text", text: p.text })) : [] }}',
+                  content: '{{ (body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts) ? body.candidates[0].content.parts.map(p => p.functionCall ? ({ type: "tool_use", id: p.functionCall.name, name: p.functionCall.name, input: p.functionCall.args }) : p.thought ? ({ type: "thinking", thinking: p.thought }) : ({ type: "text", text: p.text })) : [] }}',
                   stop_reason: '{{ (body.candidates && body.candidates[0] && body.candidates[0].finishReason === "MAX_TOKENS") ? "max_tokens" : ((body.candidates && body.candidates[0] && body.candidates[0].finishReason === "TOOL_USE") ? "tool_use" : "stop") }}',
                   usage: {
                     input_tokens: '{{ (body.usageMetadata && body.usageMetadata.promptTokenCount) || 0 }}',
@@ -142,8 +145,8 @@ export const transformers: Record<string, TransformerConfig[]> = {
                   add: {
                     type: '{{ (body.candidates && body.candidates[0] && body.candidates[0].finishReason) ? "content_block_stop" : (stream.chunkIndex === 0 ? "content_block_start" : "content_block_delta") }}',
                     index: 0,
-                    content_block: '{{ stream.chunkIndex === 0 ? { type: "text", text: "" } : undefined }}',
-                    delta: '{{ (body.candidates && body.candidates[0] && !body.candidates[0].finishReason) ? { type: "text_delta", text: (body.candidates[0].content && body.candidates[0].content.parts && body.candidates[0].content.parts[0] && body.candidates[0].content.parts[0].text) || "" } : undefined }}'
+                    content_block: '{{ stream.chunkIndex === 0 ? ((body.candidates && body.candidates[0] && body.candidates[0].content && body.candidates[0].content.parts && body.candidates[0].content.parts[0] && body.candidates[0].content.parts[0].thought) ? { type: "thinking", thinking: "" } : { type: "text", text: "" }) : undefined }}',
+                    delta: '{{ (body.candidates && body.candidates[0] && !body.candidates[0].finishReason) ? ((body.candidates[0].content && body.candidates[0].content.parts && body.candidates[0].content.parts[0] && body.candidates[0].content.parts[0].thought) ? { type: "thinking_delta", thinking: body.candidates[0].content.parts[0].thought } : { type: "text_delta", text: (body.candidates[0].content && body.candidates[0].content.parts && body.candidates[0].content.parts[0] && body.candidates[0].content.parts[0].text) || "" }) : undefined }}'
                   },
                   remove: ['candidates', 'usageMetadata', 'modelVersion', 'responseId']
                 }

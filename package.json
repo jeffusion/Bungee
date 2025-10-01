@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "start": "bun packages/core/src/main.ts",
-    "dev": "LOG_LEVEL=debug bun --watch packages/core/src/main.ts",
+    "dev": "bun --watch packages/core/src/main.ts",
     "test": "bun test",
     "prepare": "husky",
     "build": "bun run build:ui && bun run bundle:ui && bun run build:core && bun run build:cli",

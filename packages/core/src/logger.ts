@@ -2,6 +2,10 @@ import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
 import path from 'path';
 import fs from 'fs';
+import dotenv from 'dotenv';
+
+// Load environment variables first
+dotenv.config();
 
 // 确保 logs 目录存在
 const logsDir = path.resolve(process.cwd(), 'logs');
