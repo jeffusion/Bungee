@@ -1,6 +1,6 @@
 {
   "name": "@jeffusion/bungee-shared",
-  "version": "1.0.11",
+  "version": "1.0.0",
   "description": "Shared types and utilities for Bungee",
   "main": "src/index.ts",
   "types": "src/index.ts",
