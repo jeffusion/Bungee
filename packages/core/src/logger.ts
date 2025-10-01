@@ -1,4 +1,5 @@
-import pino from 'pino';
+import winston from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
 import path from 'path';
 import fs from 'fs';
 
@@ -9,35 +10,108 @@ if (!fs.existsSync(logsDir)) {
 }
 
 const logLevel = process.env.LOG_LEVEL || 'info';
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const isMaster = process.env.BUNGEE_ROLE !== 'worker';
 
-export const logger = pino({
-  level: logLevel,
-  transport: {
-    targets: [
-      // 文件输出 - 使用 pino-roll 进行日志滚动和归档
-      {
-        target: 'pino-roll',
-        level: logLevel,
-        options: {
-          file: path.join(logsDir, 'app.log'),
-          frequency: 'daily', // 按天归档
-          size: '10m', // 单个日志文件最大 10MB
-          limit: {
-            count: 5 // 最多保留 5 个归档文件（约 50MB）
-          },
-          dateFormat: 'yyyy-MM-dd', // 归档文件名日期格式
-        }
-      },
-      // 控制台输出 - 开发环境使用 pino-pretty
-      ...(process.env.NODE_ENV !== 'production' ? [{
-        target: 'pino-pretty',
-        level: logLevel,
-        options: {
-          colorize: true,
-          translateTime: 'HH:MM:ss.l',
-          ignore: 'pid,hostname',
-        }
-      }] : [])
-    ]
+// Pino-style 格式化器（用于控制台）
+const pinoStyleConsoleFormat = winston.format.printf(({ level, message, timestamp, ...meta }) => {
+  // Pino 风格格式：时间戳 级别: 消息
+  let output = `${timestamp} ${level}`;
+
+  if (message) {
+    output += `: ${message}`;
   }
+
+  // 添加额外的元数据
+  const metaKeys = Object.keys(meta).filter(k => !['level', 'timestamp'].includes(k));
+  if (metaKeys.length > 0) {
+    const metaObj: any = {};
+    metaKeys.forEach(k => metaObj[k] = meta[k]);
+    const metaStr = JSON.stringify(metaObj);
+    output += ` ${metaStr}`;
+  }
+
+  return output;
 });
+
+// 日志传输器配置
+const transports: winston.transport[] = [];
+
+if (isMaster) {
+  // 主进程：使用文件日志（按天滚动，10MB 限制，保留 5 天）
+  transports.push(
+    new DailyRotateFile({
+      filename: path.join(logsDir, 'app-%DATE%.log'),
+      datePattern: 'YYYY-MM-DD',
+      maxSize: '10m',
+      maxFiles: '5d',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
+      level: logLevel,
+    })
+  );
+}
+
+// 控制台输出（所有进程，开发环境）
+if (isDevelopment) {
+  transports.push(
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.timestamp({ format: 'HH:mm:ss.SSS' }), // Pino 风格时间格式
+        winston.format.errors({ stack: true }),
+        winston.format.colorize({ all: false, level: true }), // 只给 level 着色
+        pinoStyleConsoleFormat
+      ),
+      level: logLevel,
+    })
+  );
+}
+
+// 创建 winston logger
+const winstonLogger = winston.createLogger({
+  level: logLevel,
+  transports,
+});
+
+// 创建兼容 pino 的 logger 接口
+interface LoggerContext {
+  [key: string]: any;
+}
+
+interface Logger {
+  info(obj: LoggerContext, msg?: string): void;
+  info(msg: string): void;
+  warn(obj: LoggerContext, msg?: string): void;
+  warn(msg: string): void;
+  error(obj: LoggerContext, msg?: string): void;
+  error(msg: string): void;
+  debug(obj: LoggerContext, msg?: string): void;
+  debug(msg: string): void;
+  fatal(obj: LoggerContext, msg?: string): void;
+  fatal(msg: string): void;
+}
+
+// 创建兼容 pino API 的包装器
+function createLogMethod(level: string) {
+  return function(objOrMsg: LoggerContext | string, msg?: string) {
+    if (typeof objOrMsg === 'string') {
+      // logger.info('message') 形式
+      winstonLogger.log(level, objOrMsg);
+    } else {
+      // logger.info({ key: value }, 'message') 形式
+      const message = msg || '';
+      winstonLogger.log(level, message, objOrMsg);
+    }
+  };
+}
+
+export const logger: Logger = {
+  info: createLogMethod('info'),
+  warn: createLogMethod('warn'),
+  error: createLogMethod('error'),
+  debug: createLogMethod('debug'),
+  fatal: createLogMethod('error'), // winston 没有 fatal，映射到 error
+};

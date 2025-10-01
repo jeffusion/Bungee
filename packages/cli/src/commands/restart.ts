@@ -5,6 +5,7 @@ import { ConfigPaths } from '../config/paths';
 interface RestartOptions {
   port?: string;
   workers?: string;
+  autoUpgrade?: boolean;
 }
 
 export async function restartCommand(configPath?: string, options: RestartOptions = {}) {
@@ -17,6 +18,7 @@ export async function restartCommand(configPath?: string, options: RestartOption
     await daemonManager.restart(resolvedConfigPath, {
       workers: options.workers,
       port: options.port,
+      autoUpgrade: options.autoUpgrade,
     });
 
   } catch (error) {

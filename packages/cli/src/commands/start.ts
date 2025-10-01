@@ -6,6 +6,7 @@ interface StartOptions {
   port?: string;
   workers?: string;
   detach?: boolean;
+  autoUpgrade?: boolean;
 }
 
 export async function startCommand(configPath?: string, options: StartOptions = {}) {
@@ -25,6 +26,7 @@ export async function startCommand(configPath?: string, options: StartOptions = 
     await daemonManager.start(resolvedConfigPath, {
       workers: options.workers,
       port: options.port,
+      autoUpgrade: options.autoUpgrade,
     });
 
   } catch (error) {

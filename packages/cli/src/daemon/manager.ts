@@ -51,7 +51,7 @@ export class DaemonManager {
     }
   }
 
-  async start(configPath: string, options: { workers?: string; port?: string } = {}): Promise<void> {
+  async start(configPath: string, options: { workers?: string; port?: string; autoUpgrade?: boolean } = {}): Promise<void> {
     if (await this.isRunning()) {
       throw new Error('Bungee is already running. Use "bungee status" to check status.');
     }
@@ -63,7 +63,9 @@ export class DaemonManager {
     }
 
     // 确保二进制文件存在（如果不存在会自动下载）
-    const binaryPath = await BinaryManager.ensureBinary();
+    const binaryPath = await BinaryManager.ensureBinary({
+      autoUpgrade: options.autoUpgrade,
+    });
 
     // 打开日志文件（使用文件描述符，因为 detached 进程不能使用流）
     const logFd = fs.openSync(this.logFile, 'a');
@@ -162,7 +164,7 @@ export class DaemonManager {
     }
   }
 
-  async restart(configPath: string, options: { workers?: string; port?: string } = {}): Promise<void> {
+  async restart(configPath: string, options: { workers?: string; port?: string; autoUpgrade?: boolean } = {}): Promise<void> {
     console.log('🔄 Restarting Bungee daemon...');
 
     try {

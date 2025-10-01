@@ -17,7 +17,6 @@ import {
   isEmpty
 } from 'lodash-es';
 import { handleUIRequest } from './ui/server';
-import { parentPort, workerData } from 'worker_threads';
 
 
 // --- Runtime State Management ---
@@ -44,24 +43,73 @@ export function initializeRuntimeState(config: AppConfig) {
   logger.info('Runtime state initialized.');
 }
 
-// --- Health Checker Worker ---
-const healthChecker = new Worker(new URL('./health-checker.ts', import.meta.url).href);
-
-healthChecker.onmessage = (event: MessageEvent<{ status: string; target: string }>) => {
-  const { status, target } = event.data;
-  if (status === 'recovered') {
-    for (const routeState of runtimeState.values()) {
-      const upstream = find(routeState.upstreams, (up) => up.target === target);
-      if (upstream && upstream.status === 'UNHEALTHY') {
-        upstream.status = 'HEALTHY';
-        logger.warn({ target }, 'Upstream has recovered and is back in service.');
-        break;
+// --- Health Checker (Inline) ---
+async function probeUpstream(
+  target: string,
+  retryableStatusCodes: number[],
+  requestData: {
+    url: string;
+    method: string;
+    headers: [string, string][];
+    body: string | null;
+  }
+): Promise<boolean> {
+  try {
+    // Reconstruct headers
+    const headers = new Headers();
+    for (const [key, value] of requestData.headers) {
+      // Avoid headers that cause issues in fetch
+      if (!['content-length', 'host'].includes(key.toLowerCase())) {
+        headers.append(key, value);
       }
     }
-  }
-};
 
-const PORT = workerData?.port || process.env.PORT || 8088;
+    // Perform the probe request
+    const response = await fetch(requestData.url, {
+      method: requestData.method,
+      headers: headers,
+      body: requestData.body,
+      redirect: 'manual',
+    });
+
+    // A recovery is successful if the status code is NOT one of the retryable codes.
+    return !retryableStatusCodes.includes(response.status);
+  } catch (error) {
+    // If the probe fails, upstream is still unhealthy
+    return false;
+  }
+}
+
+function scheduleHealthCheck(
+  target: string,
+  retryableStatusCodes: number[],
+  requestData: {
+    url: string;
+    method: string;
+    headers: [string, string][];
+    body: string | null;
+  }
+) {
+  // Poll every 5 seconds
+  const intervalId = setInterval(async () => {
+    const recovered = await probeUpstream(target, retryableStatusCodes, requestData);
+
+    if (recovered) {
+      // Update runtime state
+      for (const routeState of runtimeState.values()) {
+        const upstream = find(routeState.upstreams, (up) => up.target === target);
+        if (upstream && upstream.status === 'UNHEALTHY') {
+          upstream.status = 'HEALTHY';
+          logger.warn({ target }, 'Upstream has recovered and is back in service.');
+          clearInterval(intervalId);
+          break;
+        }
+      }
+    }
+  }, 5000);
+}
+
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8088;
 
 function selectUpstream(upstreams: RuntimeUpstream[]): RuntimeUpstream | undefined {
   if (upstreams.length === 0) return undefined;
@@ -186,6 +234,20 @@ export async function handleRequest(
       logger.warn({ request: requestLog, target: upstream.target, error: (error as Error).message }, 'Request to upstream failed. Marking as UNHEALTHY and trying next.');
       upstream.status = 'UNHEALTHY';
       upstream.lastFailure = Date.now();
+
+      // Schedule health check for recovery using a simple GET request
+      if (route.failover?.retryableStatusCodes) {
+        scheduleHealthCheck(
+          upstream.target,
+          route.failover.retryableStatusCodes,
+          {
+            url: upstream.target + '/health',
+            method: 'GET',
+            headers: [],
+            body: null,
+          }
+        );
+      }
     }
   }
 
@@ -584,15 +646,6 @@ export function startServer(config: AppConfig): Server {
 export function shutdownServer(server: Server) {
   logger.info('Shutting down server...');
   server.stop(true);
-
-  // Terminate the health checker worker to prevent resource leaks
-  try {
-    healthChecker.terminate();
-    logger.info('Health checker worker terminated.');
-  } catch (error) {
-    logger.error({ error }, 'Failed to terminate health checker worker');
-  }
-
   logger.info('Server has been shut down.');
   process.exit(0);
 }
@@ -600,9 +653,9 @@ export function shutdownServer(server: Server) {
 // --- Worker (Slave) Logic ---
 async function startWorker() {
   try {
-    // Get worker configuration from workerData (Worker Threads) or environment variables (fallback)
-    const workerId = workerData?.workerId ?? (process.env.WORKER_ID ? parseInt(process.env.WORKER_ID) : 0);
-    const configPath = workerData?.configPath || process.env.CONFIG_PATH;
+    // Get worker configuration from environment variables
+    const workerId = process.env.WORKER_ID ? parseInt(process.env.WORKER_ID) : 0;
+    const configPath = process.env.CONFIG_PATH;
 
     logger.info(`Worker #${workerId} starting with PID ${process.pid}`);
 
@@ -610,28 +663,17 @@ async function startWorker() {
     const server = startServer(config);
 
     // Notify master that worker is ready
-    if (parentPort) {
-      parentPort.postMessage({ status: 'ready', pid: process.pid });
-    } else if (process.send) {
+    if (process.send) {
       process.send({ status: 'ready', pid: process.pid });
     }
 
     // Listen for shutdown commands from master
-    if (parentPort) {
-      parentPort.on('message', (message: any) => {
-        if (message && typeof message === 'object' && message.command === 'shutdown') {
-          logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
-          shutdownServer(server);
-        }
-      });
-    } else {
-      process.on('message', (message: any) => {
-        if (message && typeof message === 'object' && message.command === 'shutdown') {
-          logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
-          shutdownServer(server);
-        }
-      });
-    }
+    process.on('message', (message: any) => {
+      if (message && typeof message === 'object' && message.command === 'shutdown') {
+        logger.info(`Worker #${workerId} received shutdown command. Initiating graceful shutdown...`);
+        shutdownServer(server);
+      }
+    });
 
     const handleSignal = (signal: NodeJS.Signals) => {
       logger.info(`Worker #${workerId} received ${signal}. Initiating graceful shutdown...`);
@@ -643,16 +685,14 @@ async function startWorker() {
 
   } catch (error) {
     logger.error({ error }, 'Worker failed to start');
-    if (parentPort) {
-      parentPort.postMessage({ status: 'error', error: (error instanceof Error ? error.message : String(error)) });
-    } else if (process.send) {
+    if (process.send) {
       process.send({ status: 'error', error: (error instanceof Error ? error.message : String(error)) });
     }
     process.exit(1);
   }
 }
 
-// Start worker in Worker Thread mode or standalone mode
-if (parentPort || import.meta.main) {
+// Start worker if running as worker process
+if (process.env.BUNGEE_ROLE === 'worker' || import.meta.main) {
   startWorker();
 }

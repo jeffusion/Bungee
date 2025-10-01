@@ -7,6 +7,7 @@ import { statusCommand } from './commands/status';
 import { restartCommand } from './commands/restart';
 import { logsCommand } from './commands/logs';
 import { uiCommand } from './commands/ui';
+import { upgradeCommand } from './commands/upgrade';
 import pkg from '../package.json';
 
 program
@@ -26,6 +27,7 @@ program
   .option('-p, --port <port>', 'Override default port')
   .option('-w, --workers <count>', 'Number of worker processes', '2')
   .option('-d, --detach', 'Run as daemon (default)', true)
+  .option('--auto-upgrade', 'Automatically upgrade binary if version mismatch')
   .action(startCommand);
 
 program
@@ -38,6 +40,7 @@ program
   .description('Restart proxy server daemon (default config: ~/.bungee/config.json)')
   .option('-p, --port <port>', 'Override default port')
   .option('-w, --workers <count>', 'Number of worker processes', '2')
+  .option('--auto-upgrade', 'Automatically upgrade binary if version mismatch')
   .action(restartCommand);
 
 program
@@ -58,5 +61,11 @@ program
   .option('-p, --port <port>', 'Proxy server port', '8088')
   .option('-H, --host <host>', 'Proxy server host', 'localhost')
   .action(uiCommand);
+
+program
+  .command('upgrade')
+  .description('Upgrade Bungee binary to the latest version')
+  .option('-f, --force', 'Force re-download even if already up to date')
+  .action(upgradeCommand);
 
 program.parse();

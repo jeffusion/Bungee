@@ -1,6 +1,6 @@
 {
   "name": "@jeffusion/bungee-core",
-  "version": "1.0.9",
+  "version": "1.0.11",
   "description": "Bungee reverse proxy core engine",
   "main": "dist/master.js",
   "scripts": {
@@ -10,15 +10,13 @@
   },
   "dependencies": {
     "@jeffusion/bungee-shared": "workspace:*",
-    "pino": "^9.1.0",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0",
     "lodash-es": "^4.17.21",
     "dotenv": "^17.2.2",
     "@types/lodash-es": "^4.17.12"
   },
-  "devDependencies": {
-    "pino-pretty": "^13.1.1",
-    "pino-roll": "^3.1.0"
-  },
+  "devDependencies": {},
   "exports": {
     ".": "./dist/master.js",
     "./master": "./dist/master.js",
