@@ -19,6 +19,9 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Prepare test environment
+        run: cp config.example.json config.json
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
