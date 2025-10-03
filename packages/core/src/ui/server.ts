@@ -1,6 +1,7 @@
 import { getAsset } from './assets';
+import { handleAPIRequest } from '../api/router';
 
-export function handleUIRequest(req: Request): Response | null {
+export async function handleUIRequest(req: Request): Promise<Response | null> {
   const url = new URL(req.url);
 
   // 只处理 /__ui 路径
@@ -10,6 +11,11 @@ export function handleUIRequest(req: Request): Response | null {
 
   // 移除 /__ui 前缀
   const path = url.pathname.replace(/^\/__ui/, '');
+
+  // 处理API请求
+  if (path.startsWith('/api')) {
+    return await handleAPIRequest(req, path);
+  }
 
   // 根路径或 /index.html
   if (path === '' || path === '/' || path === '/index.html') {
@@ -21,13 +27,23 @@ export function handleUIRequest(req: Request): Response | null {
     }
   }
 
-  // 静态资源
+  // 静态资源（CSS/JS文件）
   const asset = getAsset(path);
   if (asset) {
     const contentType = getContentType(path);
     return new Response(asset, {
       headers: { 'Content-Type': contentType }
     });
+  }
+
+  // SPA路由支持：未匹配的路径返回index.html
+  if (!path.includes('.')) {
+    const html = getAsset('/');
+    if (html) {
+      return new Response(html, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
   }
 
   return new Response('Not Found', { status: 404 });

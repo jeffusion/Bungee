@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { statsCollector } from './api/collectors/stats-collector';
 import type { AppConfig, Upstream, RouteConfig, ModificationRules, TransformerConfig, ResponseRuleSet } from '@jeffusion/bungee-shared';
 import type { Server } from 'bun';
 import { loadConfig } from './config';
@@ -158,101 +159,129 @@ export async function handleRequest(
   config: AppConfig,
   upstreamSelector: (upstreams: RuntimeUpstream[]) => RuntimeUpstream | undefined = selectUpstream
 ): Promise<Response> {
-  const url = new URL(req.url);
-
-  // 优先处理 UI 请求
-  const uiResponse = handleUIRequest(req);
+  // 优先处理 UI 请求（不计入统计）
+  const uiResponse = await handleUIRequest(req);
   if (uiResponse) {
     return uiResponse;
   }
 
+  const url = new URL(req.url);
+
+  // 健康检查请求（不计入统计）
   if (url.pathname === '/health') {
     return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }), {
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  const requestLog = {
-    method: req.method,
-    url: url.pathname,
-    search: url.search,
-    requestId: crypto.randomUUID(),
-  };
-
-  logger.info({ request: requestLog }, `\n=== Incoming Request ===`);
-
-  const route = find(config.routes, (r) => url.pathname.startsWith(r.path));
-
-  if (!route) {
-    logger.error({ request: requestLog }, `No route found for path: ${url.pathname}`);
-    return new Response(JSON.stringify({ error: 'Route not found' }), { status: 404 });
+  // 浏览器自动请求（不计入统计）
+  if (url.pathname === '/favicon.ico' ||
+      url.pathname === '/.well-known/appspecific/com.chrome.devtools.json') {
+    return new Response(null, { status: 404 });
   }
-  const routeState = runtimeState.get(route.path);
-  if (!routeState) {
-    const staticUpstreams = map(route.upstreams, (up) => ({
-      ...up,
-      status: 'HEALTHY' as const,
-      lastFailure: 0
-    } as RuntimeUpstream));
-    const selectedUpstream = upstreamSelector(staticUpstreams);
-    if (!selectedUpstream) {
-      logger.error({ request: requestLog }, 'No valid upstream found for route.');
-      return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 });
+
+  const startTime = Date.now();
+  let success = true;
+
+  try {
+
+    const requestLog = {
+      method: req.method,
+      url: url.pathname,
+      search: url.search,
+      requestId: crypto.randomUUID(),
+    };
+
+    logger.info({ request: requestLog }, `\n=== Incoming Request ===`);
+
+    const route = find(config.routes, (r) => url.pathname.startsWith(r.path));
+
+    if (!route) {
+      logger.error({ request: requestLog }, `No route found for path: ${url.pathname}`);
+      success = false;
+      return new Response(JSON.stringify({ error: 'Route not found' }), { status: 404 });
     }
-    return await proxyRequest(req, route, selectedUpstream, requestLog);
-  }
-
-  const healthyUpstreams = filter(routeState.upstreams, (up) => up.status === 'HEALTHY');
-  if (healthyUpstreams.length === 0) {
-    logger.error({ request: requestLog }, 'No healthy upstreams available for this route.');
-    return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
-  }
-
-  const firstTryUpstream = upstreamSelector(healthyUpstreams);
-  if (!firstTryUpstream) {
-    logger.error({ request: requestLog }, 'Upstream selection failed.');
-    return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
-  }
-  const retryQueue = sortBy(
-    filter(healthyUpstreams, (up) => up.target !== firstTryUpstream.target),
-    [(up) => up.priority || 1, (up) => -(up.weight || 100)]
-  );
-  const attemptQueue = [firstTryUpstream, ...retryQueue];
-
-  for (const upstream of attemptQueue) {
-    try {
-      const response = await proxyRequest(req, route, upstream, requestLog);
-
-      if (!route.failover?.retryableStatusCodes.includes(response.status)) {
-        return response;
+    const routeState = runtimeState.get(route.path);
+    if (!routeState) {
+      const staticUpstreams = map(route.upstreams, (up) => ({
+        ...up,
+        status: 'HEALTHY' as const,
+        lastFailure: 0
+      } as RuntimeUpstream));
+      const selectedUpstream = upstreamSelector(staticUpstreams);
+      if (!selectedUpstream) {
+        logger.error({ request: requestLog }, 'No valid upstream found for route.');
+        success = false;
+        return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 });
       }
+      const response = await proxyRequest(req, route, selectedUpstream, requestLog);
+      if (response.status >= 400) {
+        success = false;
+      }
+      return response;
+    }
 
-      logger.warn({ request: requestLog, target: upstream.target, status: response.status }, 'Upstream returned a retryable status code.');
-      throw new Error(`Upstream returned retryable status code: ${response.status}`);
+    const healthyUpstreams = filter(routeState.upstreams, (up) => up.status === 'HEALTHY');
+    if (healthyUpstreams.length === 0) {
+      logger.error({ request: requestLog }, 'No healthy upstreams available for this route.');
+      success = false;
+      return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
+    }
 
-    } catch (error) {
-      logger.warn({ request: requestLog, target: upstream.target, error: (error as Error).message }, 'Request to upstream failed. Marking as UNHEALTHY and trying next.');
-      upstream.status = 'UNHEALTHY';
-      upstream.lastFailure = Date.now();
+    const firstTryUpstream = upstreamSelector(healthyUpstreams);
+    if (!firstTryUpstream) {
+      logger.error({ request: requestLog }, 'Upstream selection failed.');
+      success = false;
+      return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
+    }
+    const retryQueue = sortBy(
+      filter(healthyUpstreams, (up) => up.target !== firstTryUpstream.target),
+      [(up) => up.priority || 1, (up) => -(up.weight || 100)]
+    );
+    const attemptQueue = [firstTryUpstream, ...retryQueue];
 
-      // Schedule health check for recovery using a simple GET request
-      if (route.failover?.retryableStatusCodes) {
-        scheduleHealthCheck(
-          upstream.target,
-          route.failover.retryableStatusCodes,
-          {
-            url: upstream.target + '/health',
-            method: 'GET',
-            headers: [],
-            body: null,
+    for (const upstream of attemptQueue) {
+      try {
+        const response = await proxyRequest(req, route, upstream, requestLog);
+
+        if (!route.failover?.retryableStatusCodes.includes(response.status)) {
+          if (response.status >= 400) {
+            success = false;
           }
-        );
+          return response;
+        }
+
+        logger.warn({ request: requestLog, target: upstream.target, status: response.status }, 'Upstream returned a retryable status code.');
+        throw new Error(`Upstream returned retryable status code: ${response.status}`);
+
+      } catch (error) {
+        logger.warn({ request: requestLog, target: upstream.target, error: (error as Error).message }, 'Request to upstream failed. Marking as UNHEALTHY and trying next.');
+        upstream.status = 'UNHEALTHY';
+        upstream.lastFailure = Date.now();
+
+        // Schedule health check for recovery using a simple GET request
+        if (route.failover?.retryableStatusCodes) {
+          scheduleHealthCheck(
+            upstream.target,
+            route.failover.retryableStatusCodes,
+            {
+              url: upstream.target + '/health',
+              method: 'GET',
+              headers: [],
+              body: null,
+            }
+          );
+        }
       }
     }
-  }
 
-  logger.error({ request: requestLog }, 'All healthy upstreams failed.');
-  return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
+    logger.error({ request: requestLog }, 'All healthy upstreams failed.');
+    success = false;
+    return new Response(JSON.stringify({ error: 'Service Unavailable' }), { status: 503 });
+  } finally {
+    const responseTime = Date.now() - startTime;
+    statsCollector.recordRequest(success, responseTime);
+  }
 }
 
 function deepMergeRules(base: ModificationRules, override: ModificationRules): ModificationRules {
