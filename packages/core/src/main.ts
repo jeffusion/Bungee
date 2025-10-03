@@ -4,12 +4,18 @@
  * 根据环境变量 BUNGEE_ROLE 决定运行模式：
  * - master: 主进程，管理 worker 进程
  * - worker: 工作进程，处理实际请求
+ *
+ * 配置加载优先级：环境变量 > config.json > 默认值
  */
 
 import dotenv from 'dotenv';
+import { preloadGlobalConfig } from './config';
 
-// Load environment variables from .env file
+// 第1步：加载 .env 文件
 dotenv.config();
+
+// 第2步：预加载 config.json 全局配置（不覆盖已有环境变量）
+preloadGlobalConfig();
 
 const role = process.env.BUNGEE_ROLE || 'master';
 

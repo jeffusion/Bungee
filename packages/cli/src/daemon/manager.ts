@@ -76,6 +76,7 @@ export class DaemonManager {
       ...process.env,
       CONFIG_PATH: resolvedConfigPath,
       WORKER_COUNT: options.workers || '2',
+      DAEMON_MODE: 'true', // 标记为 daemon 模式
       ...(options.port && { PORT: options.port }),
     };
 

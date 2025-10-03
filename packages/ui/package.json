@@ -7,14 +7,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build --outDir dist",
-    "preview": "vite preview",
-    "test": "echo 'No tests for UI package yet'"
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@jeffusion/bungee-shared": "workspace:*"
+    "@jeffusion/bungee-shared": "workspace:*",
+    "svelte": "^4.2.18",
+    "svelte-spa-router": "^4.0.1"
   },
   "devDependencies": {
-    "vite": "^5.4.0",
-    "typescript": "^5.3.0"
+    "@sveltejs/vite-plugin-svelte": "^3.1.1",
+    "@tsconfig/svelte": "^5.0.4",
+    "autoprefixer": "^10.4.20",
+    "chart.js": "^4.4.6",
+    "daisyui": "^4.12.14",
+    "postcss": "^8.4.49",
+    "svelte-chartjs": "^3.1.5",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
   }
 }

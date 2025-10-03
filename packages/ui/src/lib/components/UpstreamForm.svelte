@@ -1,0 +1,113 @@
+<script lang="ts">
+  import type { Upstream } from '../api/routes';
+  import { validateUpstream } from '../validation/upstream-validator';
+  import HeadersEditor from './HeadersEditor.svelte';
+  import BodyEditor from './BodyEditor.svelte';
+  import TransformerEditor from './TransformerEditor.svelte';
+
+  export let upstream: Upstream;
+  export let index: number;
+  export let onRemove: () => void;
+  export let showAdvanced: boolean = false;
+
+  $: errors = validateUpstream(upstream, index);
+
+  // 确保基本结构
+  $: {
+    upstream.headers = upstream.headers || { add: {}, remove: [], default: {} };
+    upstream.body = upstream.body || { add: {}, remove: [], replace: {}, default: {} };
+  }
+
+  // 处理 transformer 变化
+  let transformerValue = typeof upstream.transformer === 'string' ? upstream.transformer : null;
+  $: upstream.transformer = transformerValue || undefined;
+</script>
+
+<div class="card bg-base-100 shadow-sm border border-base-300">
+  <div class="card-body p-4">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="font-semibold">Upstream #{index + 1}</h3>
+      <button
+        type="button"
+        class="btn btn-sm btn-error btn-circle"
+        on:click={onRemove}
+        title="Remove upstream"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div class="grid grid-cols-1 gap-4">
+      <!-- Target URL -->
+      <div class="form-control">
+        <label class="label">
+          <span class="label-text font-semibold">
+            Target URL <span class="text-error">*</span>
+          </span>
+        </label>
+        <input
+          type="url"
+          placeholder="https://api.example.com"
+          class="input input-bordered"
+          class:input-error={errors.some(e => e.field.includes('target'))}
+          bind:value={upstream.target}
+          required
+        />
+        {#if errors.some(e => e.field.includes('target'))}
+          <label class="label">
+            <span class="label-text-alt text-error">
+              {errors.find(e => e.field.includes('target'))?.message}
+            </span>
+          </label>
+        {/if}
+      </div>
+
+      <!-- Weight and Priority -->
+      <div class="grid grid-cols-2 gap-4">
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">Weight</span>
+            <span class="label-text-alt text-xs">Load balancing</span>
+          </label>
+          <input
+            type="number"
+            placeholder="100"
+            class="input input-bordered"
+            min="1"
+            bind:value={upstream.weight}
+          />
+        </div>
+
+        <div class="form-control">
+          <label class="label">
+            <span class="label-text">Priority</span>
+            <span class="label-text-alt text-xs">Failover order</span>
+          </label>
+          <input
+            type="number"
+            placeholder="1"
+            class="input input-bordered"
+            min="0"
+            bind:value={upstream.priority}
+          />
+        </div>
+      </div>
+
+      <!-- Transformer -->
+      <TransformerEditor bind:transformer={transformerValue} label="Upstream Transformer" />
+
+      <!-- Advanced Settings -->
+      <div class="collapse collapse-arrow bg-base-200">
+        <input type="checkbox" bind:checked={showAdvanced} />
+        <div class="collapse-title text-sm font-medium">
+          Advanced Settings (Headers & Body Modifications)
+        </div>
+        <div class="collapse-content space-y-6">
+          <HeadersEditor bind:value={upstream.headers} label="Upstream Headers" />
+          <div class="divider"></div>
+          <BodyEditor bind:value={upstream.body} label="Upstream Body" />
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

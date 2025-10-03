@@ -294,8 +294,38 @@ class Master {
       this.shutdownAllWorkers();
       process.exit(0);
     };
+
+    const handleRestart = async () => {
+      logger.info('Received restart signal (SIGUSR2). Initiating graceful restart...');
+
+      // 在关闭前启动新的主进程
+      try {
+        const { spawn } = await import('child_process');
+        const newMaster = spawn(process.execPath, process.argv.slice(1), {
+          detached: true,
+          stdio: 'inherit',
+          env: process.env,
+          cwd: process.cwd(),
+        });
+
+        newMaster.unref();
+        logger.info(`New master process spawned with PID ${newMaster.pid}`);
+
+        // 给新进程一点启动时间
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        logger.error({ error }, 'Failed to spawn new master process');
+      }
+
+      // 关闭旧进程的所有 worker
+      await this.shutdownAllWorkers();
+      logger.info('Old master process exiting...');
+      process.exit(0);
+    };
+
     process.on("SIGINT", handle);
     process.on("SIGTERM", handle);
+    process.on("SIGUSR2", handleRestart);
   }
 
   private async shutdownAllWorkers() {
